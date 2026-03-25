@@ -5,7 +5,7 @@ import io
 # Configuração da página
 st.set_page_config(page_title="Validador DR vs PR", layout="wide")
 
-st.title("Validador de Demanda e Produção v1.0 🚀")
+st.title("Validador de Demanda e Produção v1.1 🚀")
 
 # --- REGRAS DE NEGÓCIO ---
 produtos_alvo = ['TA', 'PA', 'PU', 'CO']
@@ -91,12 +91,21 @@ with aba2:
                 if df_tmp_raw.empty:
                     continue
 
+                # --- NOVOS FILTROS COMBINADOS ---
+                # 1. Filtro de Produtos (Coluna H = índice 7)
                 produtos_raw = df_tmp_raw[7].iloc[1:].astype(str).str.strip().str.upper()
                 mask_produtos = produtos_raw.isin(produtos_alvo)
 
+                # 2. Filtro de Planta (Coluna C = índice 2)
+                plantas_raw = df_tmp_raw[2].iloc[1:].astype(str).str.strip().str.upper()
+                mask_planta = plantas_raw != 'GENERAL RODRIGUEZ'
+
+                # A linha só passa se for o produto certo E a planta NÃO FOR General Rodriguez
+                mask_final = mask_produtos & mask_planta
+
                 # Esteira Bruta
                 df_bruto = df_tmp_raw.iloc[1:, 1:23].copy()
-                df_bruto = df_bruto[mask_produtos]
+                df_bruto = df_bruto[mask_final]
                 
                 raw_cols = df_tmp_raw.iloc[0, 1:23].astype(str).tolist()
                 unique_cols = []
@@ -145,7 +154,8 @@ with aba2:
                 for mes in meses_comparacao:
                     df_resumo_temp[mes] = df_tmp_raw[meses_indices[mes]].iloc[1:] if mes in meses_indices else 0
                 
-                df_resumo_temp = df_resumo_temp[mask_produtos]
+                # Aplica o filtro combinado no resumo também
+                df_resumo_temp = df_resumo_temp[mask_final]
                 lista_pr_resumo.append(df_resumo_temp)
                 
             except Exception as e:
@@ -175,7 +185,7 @@ with aba2:
             
             st.session_state['df_pr'] = df_pr_resumo_final
             
-            st.success(f"{len(lista_pr_resumo)} arquivos consolidados com sucesso! Apenas TA, PA, PU e CO.")
+            st.success(f"{len(lista_pr_resumo)} arquivos consolidados com sucesso! Apenas TA, PA, PU e CO. (General Rodriguez excluído).")
             st.dataframe(st.session_state['df_pr'])
 
 with aba3:
@@ -233,7 +243,7 @@ with aba3:
         st.download_button(
             label="📥 Baixar Análise Completa em Excel",
             data=buffer.getvalue(),
-            file_name="Analise_DR_vs_PR_v1.xlsx",
+            file_name="Analise_DR_vs_PR_v1-1.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     else:
