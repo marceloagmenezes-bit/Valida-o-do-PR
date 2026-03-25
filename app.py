@@ -5,7 +5,7 @@ import io
 # Configuração da página
 st.set_page_config(page_title="Validador DR vs PR", layout="wide")
 
-st.title("Validador de Demanda e Produção v1.1 🚀")
+st.title("Validador de Demanda e Produção v1.2 🚀")
 
 # --- REGRAS DE NEGÓCIO ---
 produtos_alvo = ['TA', 'PA', 'PU', 'CO']
@@ -19,6 +19,10 @@ de_para_mercados = {
 de_para_marcas = {
     'FE': 'FT'
 }
+
+# --- CONTATOS ---
+# Neste primeiro momento, todos os alertas vão para a Ana.
+email_padrao_teams = "ana.teste@outlook.com"
 
 aba1, aba2, aba3 = st.tabs(["1. Arquivo Base (DR)", "2. Arquivos de Produção (PR)", "3. Resumo de Diferenças"])
 
@@ -91,16 +95,13 @@ with aba2:
                 if df_tmp_raw.empty:
                     continue
 
-                # --- NOVOS FILTROS COMBINADOS ---
-                # 1. Filtro de Produtos (Coluna H = índice 7)
+                # Filtros Combinados (Produto + Planta)
                 produtos_raw = df_tmp_raw[7].iloc[1:].astype(str).str.strip().str.upper()
                 mask_produtos = produtos_raw.isin(produtos_alvo)
 
-                # 2. Filtro de Planta (Coluna C = índice 2)
                 plantas_raw = df_tmp_raw[2].iloc[1:].astype(str).str.strip().str.upper()
                 mask_planta = plantas_raw != 'GENERAL RODRIGUEZ'
 
-                # A linha só passa se for o produto certo E a planta NÃO FOR General Rodriguez
                 mask_final = mask_produtos & mask_planta
 
                 # Esteira Bruta
@@ -154,7 +155,6 @@ with aba2:
                 for mes in meses_comparacao:
                     df_resumo_temp[mes] = df_tmp_raw[meses_indices[mes]].iloc[1:] if mes in meses_indices else 0
                 
-                # Aplica o filtro combinado no resumo também
                 df_resumo_temp = df_resumo_temp[mask_final]
                 lista_pr_resumo.append(df_resumo_temp)
                 
@@ -222,9 +222,27 @@ with aba3:
         else:
             st.warning("Atenção: Diferenças encontradas entre a demanda (DR) e a produção (PR). Baixe o Excel para o detalhamento mensal e por série.")
             
+            # --- INTEGRAÇÃO COM TEAMS ---
+            # FUTURO: Quando quiser separar por responsável, substitua a linha abaixo por um mapeamento do tipo .map(dicionario_responsaveis)
+            df_dif_tela['Email'] = email_padrao_teams 
+            
+            # Cria a URL mágica que abre o Teams direto no chat da pessoa
+            df_dif_tela['Follow-up'] = "https://teams.microsoft.com/l/chat/0/0?users=" + df_dif_tela['Email']
+            
             st.markdown("#### Resumo de Diferenças (Total)")
-            # Exibe a tabela na tela de forma limpa
-            st.dataframe(df_dif_tela, hide_index=True)
+            
+            # Exibe a tabela na tela com a coluna formatada como link clicável
+            st.dataframe(
+                df_dif_tela, 
+                hide_index=True,
+                column_config={
+                    "Email": None, # Oculta a coluna de e-mail puro para deixar o visual mais limpo
+                    "Follow-up": st.column_config.LinkColumn(
+                        "Ação Sugerida",
+                        display_text="💬 Chamar no Teams" # O botão sempre terá esse texto
+                    )
+                }
+            )
             
         # O Excel de exportação continua completo, com todas as 5 abas
         buffer = io.BytesIO()
@@ -243,7 +261,7 @@ with aba3:
         st.download_button(
             label="📥 Baixar Análise Completa em Excel",
             data=buffer.getvalue(),
-            file_name="Analise_DR_vs_PR_v1-1.xlsx",
+            file_name="Analise_DR_vs_PR_v1-2.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     else:
