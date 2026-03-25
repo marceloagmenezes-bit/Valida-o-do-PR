@@ -7,7 +7,9 @@ st.set_page_config(page_title="Validador DR vs PR", layout="wide")
 
 st.title("Validador de Demanda e Produção")
 
-# --- DICIONÁRIOS DE CONVERSÃO ---
+# --- REGRAS DE NEGÓCIO ---
+produtos_alvo = ['TA', 'PA', 'PU', 'CO'] # O Leão de Chácara dos Produtos
+
 de_para_mercados = {
     'MERCADO INTERNO': 'BRA',
     'EXPORTAÇÃO AMERICA DO SUL': 'OSA',
@@ -44,6 +46,11 @@ with aba1:
                 
                 df_dr.dropna(subset=['Mercado', 'Marca', 'Produto', 'Série'], how='all', inplace=True)
                 
+                # --- FILTRO DE PRODUTOS DR ---
+                df_dr['Produto'] = df_dr['Produto'].astype(str).str.strip().str.upper()
+                df_dr = df_dr[df_dr['Produto'].isin(produtos_alvo)]
+                
+                # Limpezas
                 df_dr['Mercado'] = df_dr['Mercado'].astype(str).str.strip().str.upper()
                 df_dr['Mercado'] = df_dr['Mercado'].replace(de_para_mercados)
                 
@@ -55,7 +62,7 @@ with aba1:
                 
                 st.session_state['df_dr'] = df_dr.groupby(['Marca', 'Mercado', 'Produto', 'Série'])[meses].sum().reset_index()
                 
-                st.success(f"Aba '{aba_selecionada}' lida com sucesso! Mercados e Marcas padronizados.")
+                st.success(f"Aba '{aba_selecionada}' lida com sucesso! Filtrado apenas para TA, PA, PU e CO.")
                 st.dataframe(st.session_state['df_dr'])
                 
         except Exception as e:
@@ -84,10 +91,17 @@ with aba2:
                 if df_tmp_raw.empty:
                     continue
 
-                # --- 1. ESTEIRA DO ARQUIVO BRUTO (Copiando de B até W) ---
+                # --- CRIANDO A MÁSCARA DE FILTRO DOS PRODUTOS ---
+                # A coluna H é o índice 7
+                produtos_raw = df_tmp_raw[7].iloc[1:].astype(str).str.strip().str.upper()
+                mask_produtos = produtos_raw.isin(produtos_alvo)
+
+                # --- 1. ESTEIRA DO ARQUIVO BRUTO ---
                 df_bruto = df_tmp_raw.iloc[1:, 1:23].copy()
                 
-                # Desduplicador de colunas para evitar o InvalidIndexError
+                # Aplica o filtro na esteira bruta (descarta o que não é TA, PA, PU, CO)
+                df_bruto = df_bruto[mask_produtos]
+                
                 raw_cols = df_tmp_raw.iloc[0, 1:23].astype(str).tolist()
                 unique_cols = []
                 seen = set()
@@ -144,6 +158,9 @@ with aba2:
                     else:
                         df_resumo_temp[mes] = 0
                 
+                # Aplica o filtro na esteira de resumo também
+                df_resumo_temp = df_resumo_temp[mask_produtos]
+                
                 lista_pr_resumo.append(df_resumo_temp)
                 
             except Exception as e:
@@ -166,14 +183,14 @@ with aba2:
             df_pr_resumo_final = df_pr_full.groupby(['Marca', 'Mercado', 'Produto', 'Série'])[meses_comparacao].sum().reset_index()
             df_pr_resumo_final['Total PR'] = df_pr_resumo_final[meses_comparacao].sum(axis=1)
             
-            # --- Consolidação Bruta com Segurança ---
-            df_pr_bruto_final = pd.concat(lista_pr_bruto, ignore_index=True)
-            df_pr_bruto_final.dropna(how='all', inplace=True)
+            if lista_pr_bruto:
+                df_pr_bruto_final = pd.concat(lista_pr_bruto, ignore_index=True)
+                df_pr_bruto_final.dropna(how='all', inplace=True)
+                st.session_state['df_pr_bruto'] = df_pr_bruto_final 
             
             st.session_state['df_pr'] = df_pr_resumo_final
-            st.session_state['df_pr_bruto'] = df_pr_bruto_final 
             
-            st.success(f"{len(lista_pr_resumo)} arquivos consolidados com sucesso!")
+            st.success(f"{len(lista_pr_resumo)} arquivos consolidados com sucesso! Apenas TA, PA, PU e CO.")
             st.dataframe(st.session_state['df_pr'])
 
 with aba3:
@@ -182,7 +199,7 @@ with aba3:
     if 'df_dr' in st.session_state and 'df_pr' in st.session_state:
         df_dr_final = st.session_state['df_dr']
         df_pr_final = st.session_state['df_pr']
-        df_pr_bruto_export = st.session_state['df_pr_bruto']
+        df_pr_bruto_export = st.session_state.get('df_pr_bruto', pd.DataFrame())
         
         dr_subset = df_dr_final[['Marca', 'Mercado', 'Produto', 'Série'] + meses_comparacao].copy()
         dr_subset['Total DR'] = dr_subset[meses_comparacao].sum(axis=1)
@@ -197,16 +214,17 @@ with aba3:
         df_merge['Dif_Total'] = df_merge['Total PR'] - df_merge['Total DR']
         colunas_diferenca.append('Dif_Total')
         
-        df_dif_marca_mercado = df_merge.groupby(['Marca', 'Mercado'])[colunas_diferenca].sum().reset_index()
+        # --- ATUALIZADO: Agrupamento do Resumo com o PRODUTO ---
+        df_dif_resumo = df_merge.groupby(['Marca', 'Mercado', 'Produto'])[colunas_diferenca].sum().reset_index()
         df_dif_detalhada = df_merge[['Marca', 'Mercado', 'Produto', 'Série'] + colunas_diferenca]
         
         if df_merge['Dif_Total'].abs().sum() == 0 and sum(df_merge[col].abs().sum() for col in colunas_diferenca[:-1]) == 0:
-            st.success("🎉 TUDO OK! Os números batem perfeitamente. Nenhuma diferença encontrada de Julho a Dezembro.")
+            st.success("🎉 TUDO OK! Os números batem perfeitamente. Nenhuma diferença encontrada de Julho a Dezembro para os produtos selecionados.")
         else:
             st.warning("Atenção: Diferenças encontradas entre a demanda (DR) e a produção (PR).")
             
-            st.markdown("#### Resumo da Diferença (Marca e Mercado)")
-            st.dataframe(df_dif_marca_mercado[df_dif_marca_mercado['Dif_Total'] != 0])
+            st.markdown("#### Resumo da Diferença (Marca, Mercado e Produto)")
+            st.dataframe(df_dif_resumo[df_dif_resumo['Dif_Total'] != 0])
             
             st.markdown("#### Detalhe Aberto por Série")
             st.dataframe(df_dif_detalhada[df_dif_detalhada['Dif_Total'] != 0])
@@ -214,9 +232,14 @@ with aba3:
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
             df_dr_final.to_excel(writer, index=False, sheet_name='DR')
-            df_pr_bruto_export.to_excel(writer, index=False, sheet_name='PR_Bruto_Completo')
+            
+            if not df_pr_bruto_export.empty:
+                df_pr_bruto_export.to_excel(writer, index=False, sheet_name='PR_Bruto_Completo')
+                
             df_pr_final.to_excel(writer, index=False, sheet_name='PR_Resumo_Consolidado')
-            df_dif_marca_mercado.to_excel(writer, index=False, sheet_name='Dif_Marca_Mercado')
+            
+            # --- ATUALIZADO: Nome da aba no Excel para refletir a nova coluna ---
+            df_dif_resumo.to_excel(writer, index=False, sheet_name='Dif_Resumo')
             df_dif_detalhada.to_excel(writer, index=False, sheet_name='Dif_Detalhada')
             
         st.markdown("---")
