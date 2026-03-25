@@ -5,7 +5,7 @@ import io
 # Configuração da página
 st.set_page_config(page_title="Validador DR vs PR", layout="wide")
 
-st.title("Validador de Demanda e Produção")
+st.title("Validador de Demanda e Produção v1.0 🚀")
 
 # --- REGRAS DE NEGÓCIO ---
 produtos_alvo = ['TA', 'PA', 'PU', 'CO']
@@ -36,7 +36,6 @@ with aba1:
             if aba_selecionada:
                 df_dr_raw = pd.read_excel(xls_dr, sheet_name=aba_selecionada, skiprows=3, header=None)
                 
-                # --- NOVO: Mapeamento da Coluna O (14) como Planta ---
                 colunas_base = {10: 'Mercado', 11: 'Marca', 12: 'Produto', 13: 'Série', 14: 'Planta'}
                 meses = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez', 'Total MRP']
                 colunas_mrp = {i + 41: meses[i] for i in range(13)}
@@ -47,20 +46,17 @@ with aba1:
                 
                 df_dr.dropna(subset=['Mercado', 'Marca', 'Produto', 'Série'], how='all', inplace=True)
                 
-                # --- NOVO: FILTRO DA PLANTA (Começa com BRA) ---
+                # Filtro Planta
                 df_dr['Planta'] = df_dr['Planta'].astype(str).str.strip().str.upper()
                 df_dr = df_dr[df_dr['Planta'].str.startswith('BRA')]
                 
-                # FILTRO DE PRODUTOS DR
+                # Filtro Produto
                 df_dr['Produto'] = df_dr['Produto'].astype(str).str.strip().str.upper()
                 df_dr = df_dr[df_dr['Produto'].isin(produtos_alvo)]
                 
-                # Limpezas
-                df_dr['Mercado'] = df_dr['Mercado'].astype(str).str.strip().str.upper()
-                df_dr['Mercado'] = df_dr['Mercado'].replace(de_para_mercados)
-                
-                df_dr['Marca'] = df_dr['Marca'].astype(str).str.strip().str.upper()
-                df_dr['Marca'] = df_dr['Marca'].replace(de_para_marcas)
+                # De-Para
+                df_dr['Mercado'] = df_dr['Mercado'].astype(str).str.strip().str.upper().replace(de_para_mercados)
+                df_dr['Marca'] = df_dr['Marca'].astype(str).str.strip().str.upper().replace(de_para_marcas)
                 
                 for mes in meses:
                     df_dr[mes] = pd.to_numeric(df_dr[mes], errors='coerce').fillna(0)
@@ -90,17 +86,15 @@ with aba2:
                 abas_pr = xls_pr.sheet_names
                 
                 aba_alvo = next((aba for aba in abas_pr if "production request" in aba.lower()), abas_pr[0])
-
                 df_tmp_raw = pd.read_excel(xls_pr, sheet_name=aba_alvo, skiprows=3, header=None)
                 
                 if df_tmp_raw.empty:
                     continue
 
-                # CRIANDO A MÁSCARA DE FILTRO DOS PRODUTOS
                 produtos_raw = df_tmp_raw[7].iloc[1:].astype(str).str.strip().str.upper()
                 mask_produtos = produtos_raw.isin(produtos_alvo)
 
-                # 1. ESTEIRA DO ARQUIVO BRUTO
+                # Esteira Bruta
                 df_bruto = df_tmp_raw.iloc[1:, 1:23].copy()
                 df_bruto = df_bruto[mask_produtos]
                 
@@ -122,9 +116,8 @@ with aba2:
                 df_bruto.dropna(how='all', inplace=True)
                 lista_pr_bruto.append(df_bruto)
 
-                # 2. ESTEIRA DO RESUMO E COMPARAÇÃO
+                # Esteira Resumo
                 df_resumo_temp = pd.DataFrame()
-                
                 df_resumo_temp['Marca'] = df_tmp_raw[5].iloc[1:]
                 df_resumo_temp['Mercado'] = df_tmp_raw[6].iloc[1:]
                 df_resumo_temp['Produto'] = df_tmp_raw[7].iloc[1:]
@@ -139,12 +132,7 @@ with aba2:
                     
                     if isinstance(val, pd.Timestamp):
                         m = val.month
-                        if m == 7: meses_indices['Jul'] = idx
-                        elif m == 8: meses_indices['Ago'] = idx
-                        elif m == 9: meses_indices['Set'] = idx
-                        elif m == 10: meses_indices['Out'] = idx
-                        elif m == 11: meses_indices['Nov'] = idx
-                        elif m == 12: meses_indices['Dez'] = idx
+                        if m in [7,8,9,10,11,12]: meses_indices[meses_comparacao[m-7]] = idx
                     else:
                         val_str = str(val).lower()
                         if 'jul' in val_str or '07' in val_str: meses_indices['Jul'] = idx
@@ -155,10 +143,7 @@ with aba2:
                         elif 'dez' in val_str or 'dec' in val_str or '12' in val_str: meses_indices['Dez'] = idx
 
                 for mes in meses_comparacao:
-                    if mes in meses_indices:
-                        df_resumo_temp[mes] = df_tmp_raw[meses_indices[mes]].iloc[1:]
-                    else:
-                        df_resumo_temp[mes] = 0
+                    df_resumo_temp[mes] = df_tmp_raw[meses_indices[mes]].iloc[1:] if mes in meses_indices else 0
                 
                 df_resumo_temp = df_resumo_temp[mask_produtos]
                 lista_pr_resumo.append(df_resumo_temp)
@@ -194,7 +179,7 @@ with aba2:
             st.dataframe(st.session_state['df_pr'])
 
 with aba3:
-    st.subheader("Etapa 3: Resultado da Comparação")
+    st.subheader("Etapa 3: Resultado da Comparação (Visão Executiva)")
     
     if 'df_dr' in st.session_state and 'df_pr' in st.session_state:
         df_dr_final = st.session_state['df_dr']
@@ -214,20 +199,24 @@ with aba3:
         df_merge['Dif_Total'] = df_merge['Total PR'] - df_merge['Total DR']
         colunas_diferenca.append('Dif_Total')
         
-        df_dif_resumo = df_merge.groupby(['Marca', 'Mercado', 'Produto'])[colunas_diferenca].sum().reset_index()
-        df_dif_detalhada = df_merge[['Marca', 'Mercado', 'Produto', 'Série'] + colunas_diferenca]
+        # Agrupamento para o Excel (com todos os meses)
+        df_dif_resumo_excel = df_merge.groupby(['Marca', 'Mercado', 'Produto'])[colunas_diferenca].sum().reset_index()
+        df_dif_detalhada_excel = df_merge[['Marca', 'Mercado', 'Produto', 'Série'] + colunas_diferenca]
         
-        if df_merge['Dif_Total'].abs().sum() == 0 and sum(df_merge[col].abs().sum() for col in colunas_diferenca[:-1]) == 0:
-            st.success("🎉 TUDO OK! Os números batem perfeitamente. Nenhuma diferença encontrada de Julho a Dezembro para os produtos selecionados.")
+        # --- Visão de Tela (Hiper Resumida: Apenas Total por Marca, Mercado e Produto) ---
+        df_dif_tela = df_merge.groupby(['Marca', 'Mercado', 'Produto'])['Dif_Total'].sum().reset_index()
+        df_dif_tela = df_dif_tela[df_dif_tela['Dif_Total'] != 0].copy()
+        
+        if df_dif_tela.empty:
+            st.success("🎉 TUDO OK! Os números batem perfeitamente. Nenhuma diferença encontrada no Total de Julho a Dezembro para os produtos selecionados.")
         else:
-            st.warning("Atenção: Diferenças encontradas entre a demanda (DR) e a produção (PR).")
+            st.warning("Atenção: Diferenças encontradas entre a demanda (DR) e a produção (PR). Baixe o Excel para o detalhamento mensal e por série.")
             
-            st.markdown("#### Resumo da Diferença (Marca, Mercado e Produto)")
-            st.dataframe(df_dif_resumo[df_dif_resumo['Dif_Total'] != 0])
+            st.markdown("#### Resumo de Diferenças (Total)")
+            # Exibe a tabela na tela de forma limpa
+            st.dataframe(df_dif_tela, hide_index=True)
             
-            st.markdown("#### Detalhe Aberto por Série")
-            st.dataframe(df_dif_detalhada[df_dif_detalhada['Dif_Total'] != 0])
-            
+        # O Excel de exportação continua completo, com todas as 5 abas
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
             df_dr_final.to_excel(writer, index=False, sheet_name='DR')
@@ -237,14 +226,14 @@ with aba3:
                 
             df_pr_final.to_excel(writer, index=False, sheet_name='PR_Resumo_Consolidado')
             
-            df_dif_resumo.to_excel(writer, index=False, sheet_name='Dif_Resumo')
-            df_dif_detalhada.to_excel(writer, index=False, sheet_name='Dif_Detalhada')
+            df_dif_resumo_excel.to_excel(writer, index=False, sheet_name='Dif_Resumo')
+            df_dif_detalhada_excel.to_excel(writer, index=False, sheet_name='Dif_Detalhada')
             
         st.markdown("---")
         st.download_button(
-            label="📥 Baixar Consolidação Total (Com Aba Bruta) em Excel",
+            label="📥 Baixar Análise Completa em Excel",
             data=buffer.getvalue(),
-            file_name="Analise_DR_vs_PR_Completo.xlsx",
+            file_name="Analise_DR_vs_PR_v1.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     else:
