@@ -40,7 +40,6 @@ with aba1:
                 
                 df_dr.dropna(subset=['Mercado', 'Marca', 'Produto', 'Série'], how='all', inplace=True)
                 
-                # --- NOVO: Limpeza e Padronização do Mercado no DR ---
                 df_dr['Mercado'] = df_dr['Mercado'].astype(str).str.strip().str.upper()
                 df_dr['Mercado'] = df_dr['Mercado'].replace(de_para_mercados)
                 
@@ -62,9 +61,26 @@ with aba2:
     
     if arquivos_pr:
         lista_pr = []
-        try:
-            for arq in arquivos_pr:
-                df_tmp = pd.read_excel(arq, sheet_name="Production Request_FC", skiprows=3)
+        erros_pr = []
+        
+        for arq in arquivos_pr:
+            try:
+                xls_pr = pd.ExcelFile(arq)
+                abas_pr = xls_pr.sheet_names
+                
+                # --- NOVO: Busca Inteligente da Aba ---
+                aba_alvo = None
+                for aba in abas_pr:
+                    if "production request" in aba.lower():
+                        aba_alvo = aba
+                        break
+                        
+                # Se não achar nada com esse nome, pega a primeira aba por padrão
+                if not aba_alvo:
+                    aba_alvo = abas_pr[0]
+                    st.warning(f"Aviso: Aba 'Production Request' não encontrada com o nome exato no arquivo '{arq.name}'. Lendo a primeira aba: '{aba_alvo}'.")
+
+                df_tmp = pd.read_excel(xls_pr, sheet_name=aba_alvo, skiprows=3)
                 
                 df_tmp = df_tmp.rename(columns={
                     df_tmp.columns[5]: 'Marca',
@@ -73,7 +89,6 @@ with aba2:
                     df_tmp.columns[8]: 'Série'
                 })
                 
-                # --- NOVO: Limpeza e Padronização do Mercado no PR ---
                 df_tmp['Mercado'] = df_tmp['Mercado'].astype(str).str.strip().str.upper()
                 df_tmp['Mercado'] = df_tmp['Mercado'].replace(de_para_mercados)
                 
@@ -91,7 +106,16 @@ with aba2:
                 
                 df_limpo = df_tmp[colunas_chave + colunas_meses_pr]
                 lista_pr.append(df_limpo)
-            
+                
+            except Exception as e:
+                erros_pr.append(f"Erro no arquivo {arq.name}: {e}")
+        
+        # Mostra os erros caso algum arquivo tenha quebrado muito feio
+        if erros_pr:
+            for erro in erros_pr:
+                st.error(erro)
+                
+        if lista_pr:
             df_pr_full = pd.concat(lista_pr, ignore_index=True)
             df_pr_full.dropna(subset=['Marca', 'Mercado', 'Produto', 'Série'], how='all', inplace=True)
             df_pr_full[meses_comparacao] = df_pr_full[meses_comparacao].fillna(0)
@@ -101,11 +125,8 @@ with aba2:
             
             st.session_state['df_pr'] = df_pr_resumo
             
-            st.success(f"{len(arquivos_pr)} arquivos consolidados e mercados padronizados!")
+            st.success(f"{len(lista_pr)} arquivos consolidados com sucesso!")
             st.dataframe(st.session_state['df_pr'])
-            
-        except Exception as e:
-            st.error(f"Erro ao consolidar os arquivos PR: {e}")
 
 with aba3:
     st.subheader("Etapa 3: Resultado da Comparação")
@@ -117,7 +138,6 @@ with aba3:
         dr_subset = df_dr_final[['Marca', 'Mercado', 'Produto', 'Série'] + meses_comparacao].copy()
         dr_subset['Total DR'] = dr_subset[meses_comparacao].sum(axis=1)
         
-        # Agora o merge vai funcionar perfeitamente pois os nomes estão iguais (BRA com BRA, etc.)
         df_merge = pd.merge(dr_subset, df_pr_final, on=['Marca', 'Mercado', 'Produto', 'Série'], how='outer', suffixes=('_DR', '_PR')).fillna(0)
         
         colunas_diferenca = []
@@ -142,6 +162,7 @@ with aba3:
             st.markdown("#### Detalhe Aberto por Série")
             st.dataframe(df_dif_detalhada[df_dif_detalhada['Dif_Total'] != 0])
             
+        # O EXCEL CONTINUA AQUI FIRME E FORTE!
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
             df_dr_final.to_excel(writer, index=False, sheet_name='DR')
