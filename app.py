@@ -43,11 +43,13 @@ with aba1:
                 df_dr['Mercado'] = df_dr['Mercado'].astype(str).str.strip().str.upper()
                 df_dr['Mercado'] = df_dr['Mercado'].replace(de_para_mercados)
                 
-                df_dr[meses] = df_dr[meses].fillna(0)
+                # --- NOVO: Força a conversão de todos os meses do DR para números puros ---
+                for mes in meses:
+                    df_dr[mes] = pd.to_numeric(df_dr[mes], errors='coerce').fillna(0)
                 
                 st.session_state['df_dr'] = df_dr.groupby(['Marca', 'Mercado', 'Produto', 'Série'])[meses].sum().reset_index()
                 
-                st.success(f"Aba '{aba_selecionada}' lida com sucesso! Mercados padronizados.")
+                st.success(f"Aba '{aba_selecionada}' lida com sucesso! Mercados padronizados e números validados.")
                 st.dataframe(st.session_state['df_dr'])
                 
         except Exception as e:
@@ -68,14 +70,12 @@ with aba2:
                 xls_pr = pd.ExcelFile(arq)
                 abas_pr = xls_pr.sheet_names
                 
-                # --- NOVO: Busca Inteligente da Aba ---
                 aba_alvo = None
                 for aba in abas_pr:
                     if "production request" in aba.lower():
                         aba_alvo = aba
                         break
                         
-                # Se não achar nada com esse nome, pega a primeira aba por padrão
                 if not aba_alvo:
                     aba_alvo = abas_pr[0]
                     st.warning(f"Aviso: Aba 'Production Request' não encontrada com o nome exato no arquivo '{arq.name}'. Lendo a primeira aba: '{aba_alvo}'.")
@@ -110,7 +110,6 @@ with aba2:
             except Exception as e:
                 erros_pr.append(f"Erro no arquivo {arq.name}: {e}")
         
-        # Mostra os erros caso algum arquivo tenha quebrado muito feio
         if erros_pr:
             for erro in erros_pr:
                 st.error(erro)
@@ -118,7 +117,10 @@ with aba2:
         if lista_pr:
             df_pr_full = pd.concat(lista_pr, ignore_index=True)
             df_pr_full.dropna(subset=['Marca', 'Mercado', 'Produto', 'Série'], how='all', inplace=True)
-            df_pr_full[meses_comparacao] = df_pr_full[meses_comparacao].fillna(0)
+            
+            # --- NOVO: Força a conversão de todos os meses do PR para números puros ---
+            for mes in meses_comparacao:
+                df_pr_full[mes] = pd.to_numeric(df_pr_full[mes], errors='coerce').fillna(0)
             
             df_pr_resumo = df_pr_full.groupby(['Marca', 'Mercado', 'Produto', 'Série'])[meses_comparacao].sum().reset_index()
             df_pr_resumo['Total PR'] = df_pr_resumo[meses_comparacao].sum(axis=1)
@@ -162,7 +164,6 @@ with aba3:
             st.markdown("#### Detalhe Aberto por Série")
             st.dataframe(df_dif_detalhada[df_dif_detalhada['Dif_Total'] != 0])
             
-        # O EXCEL CONTINUA AQUI FIRME E FORTE!
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
             df_dr_final.to_excel(writer, index=False, sheet_name='DR')
