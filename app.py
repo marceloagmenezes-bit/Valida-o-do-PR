@@ -22,7 +22,7 @@ de_para_marcas = {
 
 # --- CONTATOS ---
 # Neste primeiro momento, todos os alertas vão para a Ana.
-email_padrao_teams = "ana.teste@outlook.com"
+email_padrao_teams = "anaflavia.nogueira@agcocorp.com"
 
 aba1, aba2, aba3 = st.tabs(["1. Arquivo Base (DR)", "2. Arquivos de Produção (PR)", "3. Resumo de Diferenças"])
 
