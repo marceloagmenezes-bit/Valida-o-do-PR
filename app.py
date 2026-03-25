@@ -7,11 +7,15 @@ st.set_page_config(page_title="Validador DR vs PR", layout="wide")
 
 st.title("Validador de Demanda e Produção")
 
-# Dicionário de conversão de Mercados (De -> Para)
+# --- DICIONÁRIOS DE CONVERSÃO ---
 de_para_mercados = {
     'MERCADO INTERNO': 'BRA',
     'EXPORTAÇÃO AMERICA DO SUL': 'OSA',
     'ARGENTINA': 'ARG'
+}
+
+de_para_marcas = {
+    'FE': 'FT'  # Converte tudo que for FE para FT
 }
 
 aba1, aba2, aba3 = st.tabs(["1. Arquivo Base (DR)", "2. Arquivos de Produção (PR)", "3. Resumo de Diferenças"])
@@ -40,16 +44,20 @@ with aba1:
                 
                 df_dr.dropna(subset=['Mercado', 'Marca', 'Produto', 'Série'], how='all', inplace=True)
                 
+                # Limpeza Mercado
                 df_dr['Mercado'] = df_dr['Mercado'].astype(str).str.strip().str.upper()
                 df_dr['Mercado'] = df_dr['Mercado'].replace(de_para_mercados)
                 
-                # --- NOVO: Força a conversão de todos os meses do DR para números puros ---
+                # Limpeza Marca (FT e FE)
+                df_dr['Marca'] = df_dr['Marca'].astype(str).str.strip().str.upper()
+                df_dr['Marca'] = df_dr['Marca'].replace(de_para_marcas)
+                
                 for mes in meses:
                     df_dr[mes] = pd.to_numeric(df_dr[mes], errors='coerce').fillna(0)
                 
                 st.session_state['df_dr'] = df_dr.groupby(['Marca', 'Mercado', 'Produto', 'Série'])[meses].sum().reset_index()
                 
-                st.success(f"Aba '{aba_selecionada}' lida com sucesso! Mercados padronizados e números validados.")
+                st.success(f"Aba '{aba_selecionada}' lida com sucesso! Mercados e Marcas padronizados.")
                 st.dataframe(st.session_state['df_dr'])
                 
         except Exception as e:
@@ -57,12 +65,13 @@ with aba1:
 
 with aba2:
     st.subheader("Etapa 2: Consolidação dos Arquivos PR")
-    st.write("Faça o upload dos 6 arquivos juntos. Os dados de julho em diante serão consolidados.")
+    st.write("Faça o upload dos 6 arquivos juntos.")
     
     arquivos_pr = st.file_uploader("Upload dos arquivos Excel (PR)", type=["xlsx", "xls", "xlsm"], accept_multiple_files=True, key="upload_pr")
     
     if arquivos_pr:
-        lista_pr = []
+        lista_pr_resumo = []
+        lista_pr_bruto = []
         erros_pr = []
         
         for arq in arquivos_pr:
@@ -70,42 +79,66 @@ with aba2:
                 xls_pr = pd.ExcelFile(arq)
                 abas_pr = xls_pr.sheet_names
                 
-                aba_alvo = None
-                for aba in abas_pr:
-                    if "production request" in aba.lower():
-                        aba_alvo = aba
-                        break
-                        
-                if not aba_alvo:
-                    aba_alvo = abas_pr[0]
-                    st.warning(f"Aviso: Aba 'Production Request' não encontrada com o nome exato no arquivo '{arq.name}'. Lendo a primeira aba: '{aba_alvo}'.")
+                aba_alvo = next((aba for aba in abas_pr if "production request" in aba.lower()), abas_pr[0])
 
-                df_tmp = pd.read_excel(xls_pr, sheet_name=aba_alvo, skiprows=3)
+                # Lê o arquivo ignorando nomes de colunas, focando apenas na "geografia" da planilha
+                df_tmp_raw = pd.read_excel(xls_pr, sheet_name=aba_alvo, skiprows=3, header=None)
                 
-                df_tmp = df_tmp.rename(columns={
-                    df_tmp.columns[5]: 'Marca',
-                    df_tmp.columns[6]: 'Mercado',
-                    df_tmp.columns[7]: 'Produto',
-                    df_tmp.columns[8]: 'Série'
-                })
+                if df_tmp_raw.empty:
+                    continue
+
+                # 1. ESTEIRA DO ARQUIVO BRUTO (Copiando de B até W)
+                # O índice B é 1 e o W é 22 (na programação do pandas é 1:23)
+                df_bruto = df_tmp_raw.iloc[1:, 1:23].copy() # Pega os dados
+                df_bruto.columns = df_tmp_raw.iloc[0, 1:23].astype(str) # Pega o cabeçalho
+                df_bruto['Arquivo_Origem'] = arq.name # Adiciona uma coluna extra para você saber de qual arquivo veio
+                df_bruto.dropna(how='all', inplace=True) # Tira linhas 100% vazias
+                lista_pr_bruto.append(df_bruto)
+
+                # 2. ESTEIRA DO RESUMO E COMPARAÇÃO
+                df_resumo_temp = pd.DataFrame()
                 
-                df_tmp['Mercado'] = df_tmp['Mercado'].astype(str).str.strip().str.upper()
-                df_tmp['Mercado'] = df_tmp['Mercado'].replace(de_para_mercados)
+                # Mapeamento pelas posições absolutas: F(5), G(6), H(7), I(8)
+                df_resumo_temp['Marca'] = df_tmp_raw[5].iloc[1:]
+                df_resumo_temp['Mercado'] = df_tmp_raw[6].iloc[1:]
+                df_resumo_temp['Produto'] = df_tmp_raw[7].iloc[1:]
+                df_resumo_temp['Série'] = df_tmp_raw[8].iloc[1:]
                 
-                colunas_chave = ['Marca', 'Mercado', 'Produto', 'Série']
-                colunas_meses_pr = []
+                # Caçador robusto de meses (procura na linha 0, olhando J até W)
+                headers = df_tmp_raw.iloc[0]
+                meses_indices = {}
                 
-                for mes in meses_comparacao:
-                    col_encontrada = [c for c in df_tmp.columns if str(c).strip().lower().startswith(mes.lower())]
-                    if col_encontrada:
-                        df_tmp = df_tmp.rename(columns={col_encontrada[0]: mes})
-                        colunas_meses_pr.append(mes)
+                for idx in range(9, min(23, len(headers))):
+                    val = headers[idx]
+                    if pd.isna(val): continue
+                    
+                    # Se o Excel formatou como Data (Timestamp)
+                    if isinstance(val, pd.Timestamp):
+                        m = val.month
+                        if m == 7: meses_indices['Jul'] = idx
+                        elif m == 8: meses_indices['Ago'] = idx
+                        elif m == 9: meses_indices['Set'] = idx
+                        elif m == 10: meses_indices['Out'] = idx
+                        elif m == 11: meses_indices['Nov'] = idx
+                        elif m == 12: meses_indices['Dez'] = idx
                     else:
-                        df_tmp[mes] = 0
-                        colunas_meses_pr.append(mes)
+                        # Se for Texto puro
+                        val_str = str(val).lower()
+                        if 'jul' in val_str or '07' in val_str: meses_indices['Jul'] = idx
+                        elif 'ago' in val_str or 'aug' in val_str or '08' in val_str: meses_indices['Ago'] = idx
+                        elif 'set' in val_str or 'sep' in val_str or '09' in val_str: meses_indices['Set'] = idx
+                        elif 'out' in val_str or 'oct' in val_str or '10' in val_str: meses_indices['Out'] = idx
+                        elif 'nov' in val_str or '11' in val_str: meses_indices['Nov'] = idx
+                        elif 'dez' in val_str or 'dec' in val_str or '12' in val_str: meses_indices['Dez'] = idx
+
+                # Extrai os meses encontrados
+                for mes in meses_comparacao:
+                    if mes in meses_indices:
+                        df_resumo_temp[mes] = df_tmp_raw[meses_indices[mes]].iloc[1:]
+                    else:
+                        df_resumo_temp[mes] = 0
                 
-                df_limpo = df_tmp[colunas_chave + colunas_meses_pr]
-                lista_pr.append(df_limpo)
+                lista_pr_resumo.append(df_resumo_temp)
                 
             except Exception as e:
                 erros_pr.append(f"Erro no arquivo {arq.name}: {e}")
@@ -114,20 +147,29 @@ with aba2:
             for erro in erros_pr:
                 st.error(erro)
                 
-        if lista_pr:
-            df_pr_full = pd.concat(lista_pr, ignore_index=True)
+        if lista_pr_resumo:
+            # Consolida o Resumo
+            df_pr_full = pd.concat(lista_pr_resumo, ignore_index=True)
             df_pr_full.dropna(subset=['Marca', 'Mercado', 'Produto', 'Série'], how='all', inplace=True)
             
-            # --- NOVO: Força a conversão de todos os meses do PR para números puros ---
+            # Limpezas
+            df_pr_full['Mercado'] = df_pr_full['Mercado'].astype(str).str.strip().str.upper().replace(de_para_mercados)
+            df_pr_full['Marca'] = df_pr_full['Marca'].astype(str).str.strip().str.upper().replace(de_para_marcas)
+            
             for mes in meses_comparacao:
                 df_pr_full[mes] = pd.to_numeric(df_pr_full[mes], errors='coerce').fillna(0)
             
-            df_pr_resumo = df_pr_full.groupby(['Marca', 'Mercado', 'Produto', 'Série'])[meses_comparacao].sum().reset_index()
-            df_pr_resumo['Total PR'] = df_pr_resumo[meses_comparacao].sum(axis=1)
+            df_pr_resumo_final = df_pr_full.groupby(['Marca', 'Mercado', 'Produto', 'Série'])[meses_comparacao].sum().reset_index()
+            df_pr_resumo_final['Total PR'] = df_pr_resumo_final[meses_comparacao].sum(axis=1)
             
-            st.session_state['df_pr'] = df_pr_resumo
+            # Consolida o Bruto
+            df_pr_bruto_final = pd.concat(lista_pr_bruto, ignore_index=True)
+            df_pr_bruto_final.dropna(how='all', inplace=True)
             
-            st.success(f"{len(lista_pr)} arquivos consolidados com sucesso!")
+            st.session_state['df_pr'] = df_pr_resumo_final
+            st.session_state['df_pr_bruto'] = df_pr_bruto_final # Salvamos o bruto na memória!
+            
+            st.success(f"{len(lista_pr_resumo)} arquivos consolidados com sucesso!")
             st.dataframe(st.session_state['df_pr'])
 
 with aba3:
@@ -136,6 +178,7 @@ with aba3:
     if 'df_dr' in st.session_state and 'df_pr' in st.session_state:
         df_dr_final = st.session_state['df_dr']
         df_pr_final = st.session_state['df_pr']
+        df_pr_bruto_export = st.session_state['df_pr_bruto']
         
         dr_subset = df_dr_final[['Marca', 'Mercado', 'Produto', 'Série'] + meses_comparacao].copy()
         dr_subset['Total DR'] = dr_subset[meses_comparacao].sum(axis=1)
@@ -166,16 +209,18 @@ with aba3:
             
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+            # Agora temos 5 abas no Excel, incluindo a Bruta!
             df_dr_final.to_excel(writer, index=False, sheet_name='DR')
-            df_pr_final.to_excel(writer, index=False, sheet_name='PR_Consolidado')
+            df_pr_bruto_export.to_excel(writer, index=False, sheet_name='PR_Bruto_Completo')
+            df_pr_final.to_excel(writer, index=False, sheet_name='PR_Resumo_Consolidado')
             df_dif_marca_mercado.to_excel(writer, index=False, sheet_name='Dif_Marca_Mercado')
             df_dif_detalhada.to_excel(writer, index=False, sheet_name='Dif_Detalhada')
             
         st.markdown("---")
         st.download_button(
-            label="📥 Baixar Consolidação e Diferenças em Excel",
+            label="📥 Baixar Consolidação Total (Com Aba Bruta) em Excel",
             data=buffer.getvalue(),
-            file_name="Analise_DR_vs_PR.xlsx",
+            file_name="Analise_DR_vs_PR_Completo.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     else:
