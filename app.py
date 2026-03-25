@@ -8,7 +8,7 @@ st.set_page_config(page_title="Validador DR vs PR", layout="wide")
 st.title("Validador de Demanda e Produção")
 
 # --- REGRAS DE NEGÓCIO ---
-produtos_alvo = ['TA', 'PA', 'PU', 'CO'] # O Leão de Chácara dos Produtos
+produtos_alvo = ['TA', 'PA', 'PU', 'CO']
 
 de_para_mercados = {
     'MERCADO INTERNO': 'BRA',
@@ -36,7 +36,8 @@ with aba1:
             if aba_selecionada:
                 df_dr_raw = pd.read_excel(xls_dr, sheet_name=aba_selecionada, skiprows=3, header=None)
                 
-                colunas_base = {10: 'Mercado', 11: 'Marca', 12: 'Produto', 13: 'Série'}
+                # --- NOVO: Mapeamento da Coluna O (14) como Planta ---
+                colunas_base = {10: 'Mercado', 11: 'Marca', 12: 'Produto', 13: 'Série', 14: 'Planta'}
                 meses = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez', 'Total MRP']
                 colunas_mrp = {i + 41: meses[i] for i in range(13)}
                 
@@ -46,7 +47,11 @@ with aba1:
                 
                 df_dr.dropna(subset=['Mercado', 'Marca', 'Produto', 'Série'], how='all', inplace=True)
                 
-                # --- FILTRO DE PRODUTOS DR ---
+                # --- NOVO: FILTRO DA PLANTA (Começa com BRA) ---
+                df_dr['Planta'] = df_dr['Planta'].astype(str).str.strip().str.upper()
+                df_dr = df_dr[df_dr['Planta'].str.startswith('BRA')]
+                
+                # FILTRO DE PRODUTOS DR
                 df_dr['Produto'] = df_dr['Produto'].astype(str).str.strip().str.upper()
                 df_dr = df_dr[df_dr['Produto'].isin(produtos_alvo)]
                 
@@ -62,7 +67,7 @@ with aba1:
                 
                 st.session_state['df_dr'] = df_dr.groupby(['Marca', 'Mercado', 'Produto', 'Série'])[meses].sum().reset_index()
                 
-                st.success(f"Aba '{aba_selecionada}' lida com sucesso! Filtrado apenas para TA, PA, PU e CO.")
+                st.success(f"Aba '{aba_selecionada}' processada com sucesso! Filtros aplicados: Plantas 'BRA' e Produtos Alvo.")
                 st.dataframe(st.session_state['df_dr'])
                 
         except Exception as e:
@@ -91,15 +96,12 @@ with aba2:
                 if df_tmp_raw.empty:
                     continue
 
-                # --- CRIANDO A MÁSCARA DE FILTRO DOS PRODUTOS ---
-                # A coluna H é o índice 7
+                # CRIANDO A MÁSCARA DE FILTRO DOS PRODUTOS
                 produtos_raw = df_tmp_raw[7].iloc[1:].astype(str).str.strip().str.upper()
                 mask_produtos = produtos_raw.isin(produtos_alvo)
 
-                # --- 1. ESTEIRA DO ARQUIVO BRUTO ---
+                # 1. ESTEIRA DO ARQUIVO BRUTO
                 df_bruto = df_tmp_raw.iloc[1:, 1:23].copy()
-                
-                # Aplica o filtro na esteira bruta (descarta o que não é TA, PA, PU, CO)
                 df_bruto = df_bruto[mask_produtos]
                 
                 raw_cols = df_tmp_raw.iloc[0, 1:23].astype(str).tolist()
@@ -120,7 +122,7 @@ with aba2:
                 df_bruto.dropna(how='all', inplace=True)
                 lista_pr_bruto.append(df_bruto)
 
-                # --- 2. ESTEIRA DO RESUMO E COMPARAÇÃO ---
+                # 2. ESTEIRA DO RESUMO E COMPARAÇÃO
                 df_resumo_temp = pd.DataFrame()
                 
                 df_resumo_temp['Marca'] = df_tmp_raw[5].iloc[1:]
@@ -158,9 +160,7 @@ with aba2:
                     else:
                         df_resumo_temp[mes] = 0
                 
-                # Aplica o filtro na esteira de resumo também
                 df_resumo_temp = df_resumo_temp[mask_produtos]
-                
                 lista_pr_resumo.append(df_resumo_temp)
                 
             except Exception as e:
@@ -214,7 +214,6 @@ with aba3:
         df_merge['Dif_Total'] = df_merge['Total PR'] - df_merge['Total DR']
         colunas_diferenca.append('Dif_Total')
         
-        # --- ATUALIZADO: Agrupamento do Resumo com o PRODUTO ---
         df_dif_resumo = df_merge.groupby(['Marca', 'Mercado', 'Produto'])[colunas_diferenca].sum().reset_index()
         df_dif_detalhada = df_merge[['Marca', 'Mercado', 'Produto', 'Série'] + colunas_diferenca]
         
@@ -238,7 +237,6 @@ with aba3:
                 
             df_pr_final.to_excel(writer, index=False, sheet_name='PR_Resumo_Consolidado')
             
-            # --- ATUALIZADO: Nome da aba no Excel para refletir a nova coluna ---
             df_dif_resumo.to_excel(writer, index=False, sheet_name='Dif_Resumo')
             df_dif_detalhada.to_excel(writer, index=False, sheet_name='Dif_Detalhada')
             
