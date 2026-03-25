@@ -1,73 +1,160 @@
 import streamlit as st
 import pandas as pd
-import io # Nova biblioteca nativa para gerenciar arquivos na memória
+import io
 
 # Configuração da página
-st.set_page_config(page_title="Validador MRP", layout="wide")
+st.set_page_config(page_title="Validador DR vs PR", layout="wide")
 
-st.title("Comparador de Arquivos")
-st.subheader("Etapa 1: Leitura e Resumo do MRP")
+st.title("Validador de Demanda e Produção")
 
-# Upload do arquivo (Agora aceita .xlsm também!)
-arquivo_1 = st.file_uploader("Faça o upload do seu arquivo Excel base", type=["xlsx", "xls", "xlsm"])
+# Dicionário de conversão de Mercados (De -> Para)
+de_para_mercados = {
+    'MERCADO INTERNO': 'BRA',
+    'EXPORTAÇÃO AMERICA DO SUL': 'OSA',
+    'ARGENTINA': 'ARG'
+}
 
-if arquivo_1 is not None:
-    try:
-        # Carrega o arquivo Excel para extrair os nomes das abas
-        xls = pd.ExcelFile(arquivo_1)
+aba1, aba2, aba3 = st.tabs(["1. Arquivo Base (DR)", "2. Arquivos de Produção (PR)", "3. Resumo de Diferenças"])
+
+meses_comparacao = ['Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez']
+
+with aba1:
+    st.subheader("Etapa 1: Leitura e Resumo do DR")
+    arquivo_dr = st.file_uploader("Upload do arquivo Excel (DR)", type=["xlsx", "xls", "xlsm"], key="upload_dr")
+    
+    if arquivo_dr is not None:
+        try:
+            xls_dr = pd.ExcelFile(arquivo_dr)
+            aba_selecionada = st.selectbox("Selecione a aba desejada:", xls_dr.sheet_names)
+            
+            if aba_selecionada:
+                df_dr_raw = pd.read_excel(xls_dr, sheet_name=aba_selecionada, skiprows=3, header=None)
+                
+                colunas_base = {10: 'Mercado', 11: 'Marca', 12: 'Produto', 13: 'Série'}
+                meses = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez', 'Total MRP']
+                colunas_mrp = {i + 41: meses[i] for i in range(13)}
+                
+                colunas_selecionadas = {**colunas_base, **colunas_mrp}
+                df_dr = df_dr_raw[list(colunas_selecionadas.keys())].copy()
+                df_dr.rename(columns=colunas_selecionadas, inplace=True)
+                
+                df_dr.dropna(subset=['Mercado', 'Marca', 'Produto', 'Série'], how='all', inplace=True)
+                
+                # --- NOVO: Limpeza e Padronização do Mercado no DR ---
+                df_dr['Mercado'] = df_dr['Mercado'].astype(str).str.strip().str.upper()
+                df_dr['Mercado'] = df_dr['Mercado'].replace(de_para_mercados)
+                
+                df_dr[meses] = df_dr[meses].fillna(0)
+                
+                st.session_state['df_dr'] = df_dr.groupby(['Marca', 'Mercado', 'Produto', 'Série'])[meses].sum().reset_index()
+                
+                st.success(f"Aba '{aba_selecionada}' lida com sucesso! Mercados padronizados.")
+                st.dataframe(st.session_state['df_dr'])
+                
+        except Exception as e:
+            st.error(f"Ocorreu um erro na Etapa 1: {e}")
+
+with aba2:
+    st.subheader("Etapa 2: Consolidação dos Arquivos PR")
+    st.write("Faça o upload dos 6 arquivos juntos. Os dados de julho em diante serão consolidados.")
+    
+    arquivos_pr = st.file_uploader("Upload dos arquivos Excel (PR)", type=["xlsx", "xls", "xlsm"], accept_multiple_files=True, key="upload_pr")
+    
+    if arquivos_pr:
+        lista_pr = []
+        try:
+            for arq in arquivos_pr:
+                df_tmp = pd.read_excel(arq, sheet_name="Production Request_FC", skiprows=3)
+                
+                df_tmp = df_tmp.rename(columns={
+                    df_tmp.columns[5]: 'Marca',
+                    df_tmp.columns[6]: 'Mercado',
+                    df_tmp.columns[7]: 'Produto',
+                    df_tmp.columns[8]: 'Série'
+                })
+                
+                # --- NOVO: Limpeza e Padronização do Mercado no PR ---
+                df_tmp['Mercado'] = df_tmp['Mercado'].astype(str).str.strip().str.upper()
+                df_tmp['Mercado'] = df_tmp['Mercado'].replace(de_para_mercados)
+                
+                colunas_chave = ['Marca', 'Mercado', 'Produto', 'Série']
+                colunas_meses_pr = []
+                
+                for mes in meses_comparacao:
+                    col_encontrada = [c for c in df_tmp.columns if str(c).strip().lower().startswith(mes.lower())]
+                    if col_encontrada:
+                        df_tmp = df_tmp.rename(columns={col_encontrada[0]: mes})
+                        colunas_meses_pr.append(mes)
+                    else:
+                        df_tmp[mes] = 0
+                        colunas_meses_pr.append(mes)
+                
+                df_limpo = df_tmp[colunas_chave + colunas_meses_pr]
+                lista_pr.append(df_limpo)
+            
+            df_pr_full = pd.concat(lista_pr, ignore_index=True)
+            df_pr_full.dropna(subset=['Marca', 'Mercado', 'Produto', 'Série'], how='all', inplace=True)
+            df_pr_full[meses_comparacao] = df_pr_full[meses_comparacao].fillna(0)
+            
+            df_pr_resumo = df_pr_full.groupby(['Marca', 'Mercado', 'Produto', 'Série'])[meses_comparacao].sum().reset_index()
+            df_pr_resumo['Total PR'] = df_pr_resumo[meses_comparacao].sum(axis=1)
+            
+            st.session_state['df_pr'] = df_pr_resumo
+            
+            st.success(f"{len(arquivos_pr)} arquivos consolidados e mercados padronizados!")
+            st.dataframe(st.session_state['df_pr'])
+            
+        except Exception as e:
+            st.error(f"Erro ao consolidar os arquivos PR: {e}")
+
+with aba3:
+    st.subheader("Etapa 3: Resultado da Comparação")
+    
+    if 'df_dr' in st.session_state and 'df_pr' in st.session_state:
+        df_dr_final = st.session_state['df_dr']
+        df_pr_final = st.session_state['df_pr']
         
-        # Cria um menu dropdown para selecionar a aba
-        aba_selecionada = st.selectbox("Selecione a aba desejada:", xls.sheet_names)
+        dr_subset = df_dr_final[['Marca', 'Mercado', 'Produto', 'Série'] + meses_comparacao].copy()
+        dr_subset['Total DR'] = dr_subset[meses_comparacao].sum(axis=1)
         
-        if aba_selecionada:
-            # Lê os dados pulando as 3 primeiras linhas
-            df = pd.read_excel(xls, sheet_name=aba_selecionada, skiprows=3, header=None)
+        # Agora o merge vai funcionar perfeitamente pois os nomes estão iguais (BRA com BRA, etc.)
+        df_merge = pd.merge(dr_subset, df_pr_final, on=['Marca', 'Mercado', 'Produto', 'Série'], how='outer', suffixes=('_DR', '_PR')).fillna(0)
+        
+        colunas_diferenca = []
+        for mes in meses_comparacao:
+            df_merge[f'Dif_{mes}'] = df_merge[f'{mes}_PR'] - df_merge[f'{mes}_DR']
+            colunas_diferenca.append(f'Dif_{mes}')
             
-            # Mapeamento das colunas base (K=10, L=11, M=12, N=13)
-            colunas_base = {10: 'Mercado', 11: 'Marca', 12: 'Produto', 13: 'Série'}
+        df_merge['Dif_Total'] = df_merge['Total PR'] - df_merge['Total DR']
+        colunas_diferenca.append('Dif_Total')
+        
+        df_dif_marca_mercado = df_merge.groupby(['Marca', 'Mercado'])[colunas_diferenca].sum().reset_index()
+        df_dif_detalhada = df_merge[['Marca', 'Mercado', 'Produto', 'Série'] + colunas_diferenca]
+        
+        if df_merge['Dif_Total'].abs().sum() == 0 and sum(df_merge[col].abs().sum() for col in colunas_diferenca[:-1]) == 0:
+            st.success("🎉 TUDO OK! Os números batem perfeitamente. Nenhuma diferença encontrada de Julho a Dezembro.")
+        else:
+            st.warning("Atenção: Diferenças encontradas entre a demanda (DR) e a produção (PR).")
             
-            # Mapeamento das colunas MRP (AP=41 até BB=53)
-            meses = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez', 'Total MRP']
-            colunas_mrp = {i + 41: meses[i] for i in range(13)}
+            st.markdown("#### Resumo da Diferença (Marca e Mercado)")
+            st.dataframe(df_dif_marca_mercado[df_dif_marca_mercado['Dif_Total'] != 0])
             
-            # Une os dois dicionários de colunas
-            colunas_selecionadas = {**colunas_base, **colunas_mrp}
+            st.markdown("#### Detalhe Aberto por Série")
+            st.dataframe(df_dif_detalhada[df_dif_detalhada['Dif_Total'] != 0])
             
-            # Filtra o dataframe para trazer apenas os índices que queremos
-            df_mrp = df[list(colunas_selecionadas.keys())].copy()
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+            df_dr_final.to_excel(writer, index=False, sheet_name='DR')
+            df_pr_final.to_excel(writer, index=False, sheet_name='PR_Consolidado')
+            df_dif_marca_mercado.to_excel(writer, index=False, sheet_name='Dif_Marca_Mercado')
+            df_dif_detalhada.to_excel(writer, index=False, sheet_name='Dif_Detalhada')
             
-            # Renomeia as colunas numéricas para os nomes reais
-            df_mrp.rename(columns=colunas_selecionadas, inplace=True)
-            
-            # Limpeza: remove linhas vazias nas chaves principais
-            df_mrp.dropna(subset=['Mercado', 'Marca', 'Produto', 'Série'], how='all', inplace=True)
-            
-            # Preenche possíveis vazios nos meses com 0
-            df_mrp[meses] = df_mrp[meses].fillna(0)
-            
-            # Cria o resumo agrupado
-            df_resumo = df_mrp.groupby(['Mercado', 'Marca', 'Produto', 'Série'])[meses].sum().reset_index()
-            
-            st.success(f"Aba '{aba_selecionada}' processada com sucesso! Confira o resumo do MRP abaixo:")
-            st.dataframe(df_resumo)
-            
-            # --- NOVA SESSÃO: DOWNLOAD EM EXCEL ---
-            st.markdown("---")
-            st.subheader("Validação dos Dados")
-            st.write("Baixe o resumo gerado acima para validar os números no seu computador.")
-            
-            # Cria um arquivo Excel na memória do servidor
-            buffer = io.BytesIO()
-            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                df_resumo.to_excel(writer, index=False, sheet_name='Resumo_Gerado')
-            
-            # Cria o botão de download
-            st.download_button(
-                label="📥 Baixar Resumo em Excel",
-                data=buffer.getvalue(),
-                file_name="Resumo_MRP_Validacao.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-            
-    except Exception as e:
-        st.error(f"Ocorreu um erro ao processar o arquivo: {e}")
+        st.markdown("---")
+        st.download_button(
+            label="📥 Baixar Consolidação e Diferenças em Excel",
+            data=buffer.getvalue(),
+            file_name="Analise_DR_vs_PR.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    else:
+        st.info("👈 Por favor, carregue os arquivos nas Abas 1 (DR) e 2 (PR) para visualizar o cruzamento.")
