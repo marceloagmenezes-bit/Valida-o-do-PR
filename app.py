@@ -1,11 +1,12 @@
 import streamlit as st
 import pandas as pd
 import io
+import urllib.parse
 
 # Configuração da página
 st.set_page_config(page_title="Validador DR vs PR", layout="wide")
 
-st.title("Validador de Demanda e Produção v1.2 🚀")
+st.title("Validador de Demanda e Produção v1.3 🚀")
 
 # --- REGRAS DE NEGÓCIO ---
 produtos_alvo = ['TA', 'PA', 'PU', 'CO']
@@ -21,8 +22,13 @@ de_para_marcas = {
 }
 
 # --- CONTATOS ---
-# Neste primeiro momento, todos os alertas vão para a Ana.
-email_padrao_teams = "anaflavia.nogueira@agcocorp.com"
+email_padrao_teams = "ana.teste@outlook.com"
+
+# --- FUNÇÃO GERADORA DO LINK COM MENSAGEM ---
+def gerar_link_teams(email, marca, mercado, produto, diferenca):
+    mensagem = f"Olá! Identificamos uma diferença no Validador DR vs PR.\n\n📍 Marca: {marca}\n🌍 Mercado: {mercado}\n🚜 Produto: {produto}\n⚠️ Diferença: {diferenca} unidades.\n\nPor favor, poderia verificar?"
+    mensagem_codificada = urllib.parse.quote(mensagem)
+    return f"https://teams.microsoft.com/l/chat/0/0?users={email}&message={mensagem_codificada}"
 
 aba1, aba2, aba3 = st.tabs(["1. Arquivo Base (DR)", "2. Arquivos de Produção (PR)", "3. Resumo de Diferenças"])
 
@@ -50,15 +56,12 @@ with aba1:
                 
                 df_dr.dropna(subset=['Mercado', 'Marca', 'Produto', 'Série'], how='all', inplace=True)
                 
-                # Filtro Planta
                 df_dr['Planta'] = df_dr['Planta'].astype(str).str.strip().str.upper()
                 df_dr = df_dr[df_dr['Planta'].str.startswith('BRA')]
                 
-                # Filtro Produto
                 df_dr['Produto'] = df_dr['Produto'].astype(str).str.strip().str.upper()
                 df_dr = df_dr[df_dr['Produto'].isin(produtos_alvo)]
                 
-                # De-Para
                 df_dr['Mercado'] = df_dr['Mercado'].astype(str).str.strip().str.upper().replace(de_para_mercados)
                 df_dr['Marca'] = df_dr['Marca'].astype(str).str.strip().str.upper().replace(de_para_marcas)
                 
@@ -83,6 +86,7 @@ with aba2:
         lista_pr_resumo = []
         lista_pr_bruto = []
         erros_pr = []
+        cabecalho_padrao = None # Variável para travar o cabeçalho no primeiro arquivo
         
         for arq in arquivos_pr:
             try:
@@ -95,7 +99,6 @@ with aba2:
                 if df_tmp_raw.empty:
                     continue
 
-                # Filtros Combinados (Produto + Planta)
                 produtos_raw = df_tmp_raw[7].iloc[1:].astype(str).str.strip().str.upper()
                 mask_produtos = produtos_raw.isin(produtos_alvo)
 
@@ -104,24 +107,27 @@ with aba2:
 
                 mask_final = mask_produtos & mask_planta
 
-                # Esteira Bruta
+                # --- AJUSTE DA ESTEIRA BRUTA ---
                 df_bruto = df_tmp_raw.iloc[1:, 1:23].copy()
                 df_bruto = df_bruto[mask_final]
                 
-                raw_cols = df_tmp_raw.iloc[0, 1:23].astype(str).tolist()
-                unique_cols = []
-                seen = set()
+                # Se for o primeiro arquivo, cria e salva o cabeçalho padrão limpo
+                if cabecalho_padrao is None:
+                    raw_cols = df_tmp_raw.iloc[0, 1:23].astype(str).tolist()
+                    unique_cols = []
+                    seen = set()
+                    for col in raw_cols:
+                        new_col = col.strip() # Limpa espaços nas pontas
+                        counter = 1
+                        while new_col in seen:
+                            new_col = f"{col.strip()}_{counter}"
+                            counter += 1
+                        seen.add(new_col)
+                        unique_cols.append(new_col)
+                    cabecalho_padrao = unique_cols
                 
-                for col in raw_cols:
-                    new_col = col
-                    counter = 1
-                    while new_col in seen:
-                        new_col = f"{col}_{counter}"
-                        counter += 1
-                    seen.add(new_col)
-                    unique_cols.append(new_col)
-                
-                df_bruto.columns = unique_cols
+                # Força TODOS os arquivos a usarem o exato mesmo cabeçalho do primeiro
+                df_bruto.columns = cabecalho_padrao
                 df_bruto['Arquivo_Origem'] = arq.name
                 df_bruto.dropna(how='all', inplace=True)
                 lista_pr_bruto.append(df_bruto)
@@ -179,6 +185,7 @@ with aba2:
             df_pr_resumo_final['Total PR'] = df_pr_resumo_final[meses_comparacao].sum(axis=1)
             
             if lista_pr_bruto:
+                # Agora a colagem vertical (escadinha) não acontece mais!
                 df_pr_bruto_final = pd.concat(lista_pr_bruto, ignore_index=True)
                 df_pr_bruto_final.dropna(how='all', inplace=True)
                 st.session_state['df_pr_bruto'] = df_pr_bruto_final 
@@ -209,11 +216,9 @@ with aba3:
         df_merge['Dif_Total'] = df_merge['Total PR'] - df_merge['Total DR']
         colunas_diferenca.append('Dif_Total')
         
-        # Agrupamento para o Excel (com todos os meses)
         df_dif_resumo_excel = df_merge.groupby(['Marca', 'Mercado', 'Produto'])[colunas_diferenca].sum().reset_index()
         df_dif_detalhada_excel = df_merge[['Marca', 'Mercado', 'Produto', 'Série'] + colunas_diferenca]
         
-        # --- Visão de Tela (Hiper Resumida: Apenas Total por Marca, Mercado e Produto) ---
         df_dif_tela = df_merge.groupby(['Marca', 'Mercado', 'Produto'])['Dif_Total'].sum().reset_index()
         df_dif_tela = df_dif_tela[df_dif_tela['Dif_Total'] != 0].copy()
         
@@ -222,29 +227,26 @@ with aba3:
         else:
             st.warning("Atenção: Diferenças encontradas entre a demanda (DR) e a produção (PR). Baixe o Excel para o detalhamento mensal e por série.")
             
-            # --- INTEGRAÇÃO COM TEAMS ---
-            # FUTURO: Quando quiser separar por responsável, substitua a linha abaixo por um mapeamento do tipo .map(dicionario_responsaveis)
             df_dif_tela['Email'] = email_padrao_teams 
-            
-            # Cria a URL mágica que abre o Teams direto no chat da pessoa
-            df_dif_tela['Follow-up'] = "https://teams.microsoft.com/l/chat/0/0?users=" + df_dif_tela['Email']
+            df_dif_tela['Follow-up'] = df_dif_tela.apply(
+                lambda row: gerar_link_teams(row['Email'], row['Marca'], row['Mercado'], row['Produto'], row['Dif_Total']), 
+                axis=1
+            )
             
             st.markdown("#### Resumo de Diferenças (Total)")
             
-            # Exibe a tabela na tela com a coluna formatada como link clicável
             st.dataframe(
                 df_dif_tela, 
                 hide_index=True,
                 column_config={
-                    "Email": None, # Oculta a coluna de e-mail puro para deixar o visual mais limpo
+                    "Email": None,
                     "Follow-up": st.column_config.LinkColumn(
                         "Ação Sugerida",
-                        display_text="💬 Chamar no Teams" # O botão sempre terá esse texto
+                        display_text="💬 Enviar Alerta"
                     )
                 }
             )
             
-        # O Excel de exportação continua completo, com todas as 5 abas
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
             df_dr_final.to_excel(writer, index=False, sheet_name='DR')
@@ -261,7 +263,7 @@ with aba3:
         st.download_button(
             label="📥 Baixar Análise Completa em Excel",
             data=buffer.getvalue(),
-            file_name="Analise_DR_vs_PR_v1-2.xlsx",
+            file_name="Analise_DR_vs_PR_v1-3.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     else:
