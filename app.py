@@ -6,7 +6,7 @@ import urllib.parse
 # Configuração da página
 st.set_page_config(page_title="Validador DR vs PR", layout="wide")
 
-st.title("Validador de Demanda e Produção v1.4 🚀")
+st.title("Validador de Demanda e Produção v1.5 🚀")
 
 # --- REGRAS DE NEGÓCIO ---
 produtos_alvo = ['TA', 'PA', 'PU', 'CO']
@@ -111,12 +111,19 @@ with aba2:
                 df_bruto = df_tmp_raw.iloc[1:, 1:23].copy() # Copia de B (1) a W (22)
                 df_bruto = df_bruto[mask_final]
                 
-                # BORRACHA AUTOMÁTICA: Limpa as colunas de Jan a Jun (J até P)
-                # No recorte de B até W (22 colunas), J a P caem exatamente nos índices 8 ao 14
+                # BORRACHA E RECALCULO
                 if not df_bruto.empty:
+                    # 1. Apaga de Jan a Jun (Índices 8 a 14)
                     df_bruto.iloc[:, 8:15] = None
+                    
+                    # 2. Força os meses de Jul a Dez a serem números (Índices 15 a 20)
+                    for col_idx in range(15, 21):
+                        df_bruto.iloc[:, col_idx] = pd.to_numeric(df_bruto.iloc[:, col_idx], errors='coerce').fillna(0)
+                        
+                    # 3. Recalcula a coluna Total (Índice 21 / Coluna W) com a soma exata de Jul a Dez
+                    df_bruto.iloc[:, 21] = df_bruto.iloc[:, 15:21].sum(axis=1)
                 
-                # Trava o cabeçalho no primeiro arquivo para evitar a "escadinha"
+                # ARRUMANDO OS CABEÇALHOS
                 if cabecalho_padrao is None:
                     raw_cols = df_tmp_raw.iloc[0, 1:23].astype(str).tolist()
                     unique_cols = []
@@ -129,6 +136,13 @@ with aba2:
                             counter += 1
                         seen.add(new_col)
                         unique_cols.append(new_col)
+                        
+                    # Força a renomear Q a W (índices 15 a 21)
+                    nomes_explicitos = ['Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro', 'Total']
+                    for i, nome in enumerate(nomes_explicitos):
+                        if 15 + i < len(unique_cols):
+                            unique_cols[15 + i] = nome
+                            
                     cabecalho_padrao = unique_cols
                 
                 df_bruto.columns = cabecalho_padrao
@@ -266,7 +280,7 @@ with aba3:
         st.download_button(
             label="📥 Baixar Análise Completa em Excel",
             data=buffer.getvalue(),
-            file_name="Analise_DR_vs_PR_v1-4.xlsx",
+            file_name="Analise_DR_vs_PR_v1-5.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     else:
