@@ -6,7 +6,7 @@ import urllib.parse
 # Configuração da página
 st.set_page_config(page_title="Validador DR vs PR", layout="wide")
 
-st.title("Validador de Demanda e Produção v1.5 🚀")
+st.title("Validador de Demanda e Produção v1.6 🚀")
 
 # --- REGRAS DE NEGÓCIO ---
 produtos_alvo = ['TA', 'PA', 'PU', 'CO']
@@ -83,104 +83,39 @@ with aba2:
     arquivos_pr = st.file_uploader("Upload dos arquivos Excel (PR)", type=["xlsx", "xls", "xlsm"], accept_multiple_files=True, key="upload_pr")
     
     if arquivos_pr:
-        lista_pr_resumo = []
         lista_pr_bruto = []
         erros_pr = []
-        cabecalho_padrao = None 
+        
+        # --- CABEÇALHO DEFINITIVO À PROVA DE BALAS ---
+        nomes_colunas_estaticas = [
+            'B_InfoGeral', 'C_Planta', 'D_InfoGeral', 'E_InfoGeral', 
+            'F_Marca', 'G_Mercado', 'H_Produto', 'I_Série',
+            'J_Jan', 'K_Fev', 'L_Mar', 'M_Abr', 'N_Mai', 'O_Jun', 'P_Sem1',
+            'Q_Julho', 'R_Agosto', 'S_Setembro', 'T_Outubro', 'U_Novembro', 'V_Dezembro', 'W_Total_Ano'
+        ]
         
         for arq in arquivos_pr:
             try:
                 xls_pr = pd.ExcelFile(arq)
                 abas_pr = xls_pr.sheet_names
-                
                 aba_alvo = next((aba for aba in abas_pr if "production request" in aba.lower()), abas_pr[0])
-                df_tmp_raw = pd.read_excel(xls_pr, sheet_name=aba_alvo, skiprows=3, header=None)
                 
-                if df_tmp_raw.empty:
+                # Lê EXATAMENTE de B até W, pulando as 4 primeiras linhas de cabeçalho! Pega só o valor bruto.
+                df_dados = pd.read_excel(xls_pr, sheet_name=aba_alvo, skiprows=4, usecols="B:W", header=None)
+                
+                if df_dados.empty:
                     continue
 
-                produtos_raw = df_tmp_raw[7].iloc[1:].astype(str).str.strip().str.upper()
-                mask_produtos = produtos_raw.isin(produtos_alvo)
-
-                plantas_raw = df_tmp_raw[2].iloc[1:].astype(str).str.strip().str.upper()
-                mask_planta = plantas_raw != 'GENERAL RODRIGUEZ'
-
-                mask_final = mask_produtos & mask_planta
-
-                # --- AJUSTE DA ESTEIRA BRUTA ---
-                df_bruto = df_tmp_raw.iloc[1:, 1:23].copy() # Copia de B (1) a W (22)
-                df_bruto = df_bruto[mask_final]
+                # Se algum arquivo vier com menos de 22 colunas, o pandas preenche com nulo para não quebrar a ordem
+                if len(df_dados.columns) < 22:
+                    for c in range(len(df_dados.columns), 22):
+                        df_dados[c] = None
                 
-                # BORRACHA E RECALCULO
-                if not df_bruto.empty:
-                    # 1. Apaga de Jan a Jun (Índices 8 a 14)
-                    df_bruto.iloc[:, 8:15] = None
-                    
-                    # 2. Força os meses de Jul a Dez a serem números (Índices 15 a 20)
-                    for col_idx in range(15, 21):
-                        df_bruto.iloc[:, col_idx] = pd.to_numeric(df_bruto.iloc[:, col_idx], errors='coerce').fillna(0)
-                        
-                    # 3. Recalcula a coluna Total (Índice 21 / Coluna W) com a soma exata de Jul a Dez
-                    df_bruto.iloc[:, 21] = df_bruto.iloc[:, 15:21].sum(axis=1)
+                # Força o nosso cabeçalho claro e perfeito
+                df_dados.columns = nomes_colunas_estaticas
+                df_dados['Arquivo_Origem'] = arq.name
                 
-                # ARRUMANDO OS CABEÇALHOS
-                if cabecalho_padrao is None:
-                    raw_cols = df_tmp_raw.iloc[0, 1:23].astype(str).tolist()
-                    unique_cols = []
-                    seen = set()
-                    for col in raw_cols:
-                        new_col = col.strip()
-                        counter = 1
-                        while new_col in seen:
-                            new_col = f"{col.strip()}_{counter}"
-                            counter += 1
-                        seen.add(new_col)
-                        unique_cols.append(new_col)
-                        
-                    # Força a renomear Q a W (índices 15 a 21)
-                    nomes_explicitos = ['Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro', 'Total']
-                    for i, nome in enumerate(nomes_explicitos):
-                        if 15 + i < len(unique_cols):
-                            unique_cols[15 + i] = nome
-                            
-                    cabecalho_padrao = unique_cols
-                
-                df_bruto.columns = cabecalho_padrao
-                df_bruto['Arquivo_Origem'] = arq.name
-                df_bruto.dropna(how='all', inplace=True)
-                lista_pr_bruto.append(df_bruto)
-
-                # Esteira Resumo
-                df_resumo_temp = pd.DataFrame()
-                df_resumo_temp['Marca'] = df_tmp_raw[5].iloc[1:]
-                df_resumo_temp['Mercado'] = df_tmp_raw[6].iloc[1:]
-                df_resumo_temp['Produto'] = df_tmp_raw[7].iloc[1:]
-                df_resumo_temp['Série'] = df_tmp_raw[8].iloc[1:]
-                
-                headers = df_tmp_raw.iloc[0]
-                meses_indices = {}
-                
-                for idx in range(9, min(23, len(headers))):
-                    val = headers[idx]
-                    if pd.isna(val): continue
-                    
-                    if isinstance(val, pd.Timestamp):
-                        m = val.month
-                        if m in [7,8,9,10,11,12]: meses_indices[meses_comparacao[m-7]] = idx
-                    else:
-                        val_str = str(val).lower()
-                        if 'jul' in val_str or '07' in val_str: meses_indices['Jul'] = idx
-                        elif 'ago' in val_str or 'aug' in val_str or '08' in val_str: meses_indices['Ago'] = idx
-                        elif 'set' in val_str or 'sep' in val_str or '09' in val_str: meses_indices['Set'] = idx
-                        elif 'out' in val_str or 'oct' in val_str or '10' in val_str: meses_indices['Out'] = idx
-                        elif 'nov' in val_str or '11' in val_str: meses_indices['Nov'] = idx
-                        elif 'dez' in val_str or 'dec' in val_str or '12' in val_str: meses_indices['Dez'] = idx
-
-                for mes in meses_comparacao:
-                    df_resumo_temp[mes] = df_tmp_raw[meses_indices[mes]].iloc[1:] if mes in meses_indices else 0
-                
-                df_resumo_temp = df_resumo_temp[mask_final]
-                lista_pr_resumo.append(df_resumo_temp)
+                lista_pr_bruto.append(df_dados)
                 
             except Exception as e:
                 erros_pr.append(f"Erro no arquivo {arq.name}: {e}")
@@ -189,27 +124,63 @@ with aba2:
             for erro in erros_pr:
                 st.error(erro)
                 
-        if lista_pr_resumo:
-            df_pr_full = pd.concat(lista_pr_resumo, ignore_index=True)
-            df_pr_full.dropna(subset=['Marca', 'Mercado', 'Produto', 'Série'], how='all', inplace=True)
+        if lista_pr_bruto:
+            # 1. Empilha todos os dados como blocos de Lego
+            df_pr_bruto_full = pd.concat(lista_pr_bruto, ignore_index=True)
             
-            df_pr_full['Mercado'] = df_pr_full['Mercado'].astype(str).str.strip().str.upper().replace(de_para_mercados)
-            df_pr_full['Marca'] = df_pr_full['Marca'].astype(str).str.strip().str.upper().replace(de_para_marcas)
+            # Remove linhas que vieram totalmente em branco
+            df_pr_bruto_full.dropna(how='all', subset=['H_Produto', 'I_Série'], inplace=True)
             
-            for mes in meses_comparacao:
-                df_pr_full[mes] = pd.to_numeric(df_pr_full[mes], errors='coerce').fillna(0)
+            # 2. Aplica os Filtros (Produto e Planta)
+            mask_produtos = df_pr_bruto_full['H_Produto'].astype(str).str.strip().str.upper().isin(produtos_alvo)
+            mask_planta = df_pr_bruto_full['C_Planta'].astype(str).str.strip().str.upper() != 'GENERAL RODRIGUEZ'
+            df_pr_bruto_full = df_pr_bruto_full[mask_produtos & mask_planta].copy()
             
-            df_pr_resumo_final = df_pr_full.groupby(['Marca', 'Mercado', 'Produto', 'Série'])[meses_comparacao].sum().reset_index()
+            # 3. Borracha: Limpa os meses antigos (J até P)
+            colunas_limpar = ['J_Jan', 'K_Fev', 'L_Mar', 'M_Abr', 'N_Mai', 'O_Jun', 'P_Sem1']
+            df_pr_bruto_full[colunas_limpar] = None
+            
+            # 4. Transforma os meses de Q a V em números reais (0 se estiver vazio)
+            meses_q_v = ['Q_Julho', 'R_Agosto', 'S_Setembro', 'T_Outubro', 'U_Novembro', 'V_Dezembro']
+            for mes in meses_q_v:
+                df_pr_bruto_full[mes] = pd.to_numeric(df_pr_bruto_full[mes], errors='coerce').fillna(0)
+                
+            # 5. Recalcula o Total da coluna W para garantir que está 100% perfeito
+            df_pr_bruto_full['W_Total_Ano'] = df_pr_bruto_full[meses_q_v].sum(axis=1)
+            
+            # Salva a Aba Bruta limpinha e clara
+            st.session_state['df_pr_bruto'] = df_pr_bruto_full
+            
+            # --- CONSTRUINDO O RESUMO PARA A COMPARAÇÃO ---
+            df_resumo = df_pr_bruto_full.copy()
+            
+            # Renomeia as colunas pro padrão que o robô já conhece na Etapa 3
+            de_para_nomes = {
+                'F_Marca': 'Marca',
+                'G_Mercado': 'Mercado',
+                'H_Produto': 'Produto',
+                'I_Série': 'Série',
+                'Q_Julho': 'Jul',
+                'R_Agosto': 'Ago',
+                'S_Setembro': 'Set',
+                'T_Outubro': 'Out',
+                'U_Novembro': 'Nov',
+                'V_Dezembro': 'Dez',
+                'W_Total_Ano': 'Total PR'
+            }
+            df_resumo.rename(columns=de_para_nomes, inplace=True)
+            
+            # Aplica o De-Para de Nomes
+            df_resumo['Mercado'] = df_resumo['Mercado'].astype(str).str.strip().str.upper().replace(de_para_mercados)
+            df_resumo['Marca'] = df_resumo['Marca'].astype(str).str.strip().str.upper().replace(de_para_marcas)
+            
+            # Agrupa
+            df_pr_resumo_final = df_resumo.groupby(['Marca', 'Mercado', 'Produto', 'Série'])[meses_comparacao].sum().reset_index()
             df_pr_resumo_final['Total PR'] = df_pr_resumo_final[meses_comparacao].sum(axis=1)
-            
-            if lista_pr_bruto:
-                df_pr_bruto_final = pd.concat(lista_pr_bruto, ignore_index=True)
-                df_pr_bruto_final.dropna(how='all', inplace=True)
-                st.session_state['df_pr_bruto'] = df_pr_bruto_final 
             
             st.session_state['df_pr'] = df_pr_resumo_final
             
-            st.success(f"{len(lista_pr_resumo)} arquivos consolidados com sucesso! Apenas TA, PA, PU e CO. (General Rodriguez excluído).")
+            st.success(f"{len(lista_pr_bruto)} arquivos consolidados com sucesso! Apenas TA, PA, PU e CO. (General Rodriguez excluído).")
             st.dataframe(st.session_state['df_pr'])
 
 with aba3:
@@ -280,7 +251,7 @@ with aba3:
         st.download_button(
             label="📥 Baixar Análise Completa em Excel",
             data=buffer.getvalue(),
-            file_name="Analise_DR_vs_PR_v1-5.xlsx",
+            file_name="Analise_DR_vs_PR_v1-6.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     else:
