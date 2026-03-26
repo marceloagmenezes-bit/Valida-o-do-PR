@@ -1,12 +1,13 @@
 import streamlit as st
 import pandas as pd
+import numpy as np # NOVA IMPORTAÇÃO: O antídoto para vazios do Excel
 import io
 import urllib.parse
 
 # Configuração da página
 st.set_page_config(page_title="Validador DR vs PR", layout="wide")
 
-st.title("Validador de Demanda e Produção v2.1 🚀")
+st.title("Validador de Demanda e Produção v2.2 🚀")
 
 # --- REGRAS DE NEGÓCIO ---
 produtos_alvo = ['TA', 'PA', 'PU', 'CO']
@@ -67,7 +68,11 @@ with aba1:
                 for mes in meses:
                     df_dr[mes] = pd.to_numeric(df_dr[mes], errors='coerce').fillna(0)
                 
-                st.session_state['df_dr'] = df_dr.groupby(['Marca', 'Mercado', 'Produto', 'Série'])[meses].sum().reset_index()
+                # Vacina contra o "Assassino Silencioso" do Groupby no DR também
+                chaves_agrupamento = ['Marca', 'Mercado', 'Produto', 'Série']
+                df_dr[chaves_agrupamento] = df_dr[chaves_agrupamento].fillna('N/A')
+                
+                st.session_state['df_dr'] = df_dr.groupby(chaves_agrupamento)[meses].sum().reset_index()
                 
                 st.success(f"Aba '{aba_selecionada}' processada com sucesso!")
                 st.dataframe(st.session_state['df_dr'])
@@ -86,7 +91,6 @@ with aba2:
         lista_pr_bruto = []
         erros_pr = []
         
-        # --- CABEÇALHO CLARO E EXPLICATIVO (O QUE O USUÁRIO VÊ NA TELA E NO EXCEL) ---
         colunas_absolutas = [
             'B_Ciclo', 'C_Planta', 'D_Código', 'E_FC', 
             'F_Marca', 'G_Mercado', 'H_Produto', 'I_Série',
@@ -100,35 +104,25 @@ with aba2:
                 abas_pr = xls_pr.sheet_names
                 aba_alvo = next((aba for aba in abas_pr if "production request" in aba.lower()), abas_pr[0])
                 
-                # Leitura Cirúrgica (Carrega como um bloco bruto de B até W)
-                df_raw = pd.read_excel(xls_pr, sheet_name=aba_alvo, header=None, usecols="B:W")
+                # Pula as 3 linhas de cima, o cabeçalho fica na Linha 4 e os DADOS REAIS na Linha 5
+                df_raw = pd.read_excel(xls_pr, sheet_name=aba_alvo, skiprows=3, header=None, usecols="B:W")
                 
-                # Garante que a matriz tem exatas 22 colunas, preenchendo o que faltar
                 while len(df_raw.columns) < 22:
                     df_raw[len(df_raw.columns)] = None
 
-                # NOMEIA AS COLUNAS PRIMEIRO (Evita que o Python erre a mira)
                 df_raw.columns = colunas_absolutas
                 df_raw['Arquivo_Origem'] = arq.name
-
-                # O RADAR (Buscando onde os dados começam com base na palavra PRODUTO na coluna H)
-                linha_inicio_dados = 4
-                for i in range(min(20, len(df_raw))):
-                    val_h = str(df_raw['H_Produto'].iloc[i]).strip().upper()
-                    if 'PRODUTO' in val_h or 'PROD' in val_h:
-                        linha_inicio_dados = i + 1
-                        break
                 
-                # Recorta apenas os dados
-                df_dados = df_raw.iloc[linha_inicio_dados:].copy()
+                # Começa a recortar rigorosamente a partir da linha 5 do Excel (Index 1 do df_raw)
+                df_dados = df_raw.iloc[1:].copy()
                 
-                # --- O TRUQUE PARA SALVAR AS CÉLULAS MESCLADAS ---
-                # Arrasta o nome da Planta, Marca, Mercado e Produto para as linhas em branco abaixo delas
-                colunas_para_preencher = ['C_Planta', 'F_Marca', 'G_Mercado', 'H_Produto']
-                df_dados[colunas_para_preencher] = df_dados[colunas_para_preencher].ffill()
+                # --- A MÁGICA ANTE-ERROS ---
+                # 1. Transforma células com apenas "espaço em branco" em NaN de verdade
+                df_dados.replace(r'^\s*$', np.nan, regex=True, inplace=True)
                 
-                # Remove apenas as linhas que estão 100% em branco nos códigos
-                df_dados.dropna(subset=['H_Produto', 'I_Série'], how='all', inplace=True)
+                # 2. Arrastar os dados para as linhas vazias de baixo (desmesclar)
+                col_texto_base = ['C_Planta', 'D_Código', 'E_FC', 'F_Marca', 'G_Mercado', 'H_Produto', 'I_Série']
+                df_dados[col_texto_base] = df_dados[col_texto_base].ffill()
                 
                 # --- FILTROS DE NEGÓCIO ---
                 df_dados['H_Produto'] = df_dados['H_Produto'].astype(str).str.strip().str.upper()
@@ -143,21 +137,22 @@ with aba2:
                     continue
                 
                 # --- BORRACHA E MATEMÁTICA ---
-                # Limpa meses antigos
                 col_jan_jun = ['J_Jan', 'K_Fev', 'L_Mar', 'M_Abr', 'N_Mai', 'O_Jun', 'P_Sem1']
                 df_bruto.loc[:, col_jan_jun] = None
                 
-                # Força números puros no semestre 2
                 meses_semestre2 = ['Q_Julho', 'R_Agosto', 'S_Setembro', 'T_Outubro', 'U_Novembro', 'V_Dezembro']
                 for mes in meses_semestre2:
                     df_bruto[mes] = pd.to_numeric(df_bruto[mes], errors='coerce').fillna(0)
                 
-                # Recalcula o Total da coluna W do zero
                 df_bruto['W_Total_Ano'] = df_bruto[meses_semestre2].sum(axis=1)
+                
+                # 3. VACINA: Preenche com 'N/A' os que ficaram vazios mesmo após arrastar.
+                # Isso impede o Python de deletar a sua quantidade na hora de somar!
+                df_bruto[col_texto_base] = df_bruto[col_texto_base].fillna('N/A')
                 
                 lista_pr_bruto.append(df_bruto)
                 
-                # --- PREPARA O RESUMO PARA A COMPARAÇÃO (Etapa 3) ---
+                # --- PREPARA O RESUMO (Etapa 3) ---
                 df_resumo_temp = df_bruto[['F_Marca', 'G_Mercado', 'H_Produto', 'I_Série'] + meses_semestre2].copy()
                 
                 de_para_nomes = {
@@ -183,22 +178,24 @@ with aba2:
                 st.error(erro)
                 
         if lista_pr_resumo:
-            # Consolida o Resumo Final
             df_pr_full = pd.concat(lista_pr_resumo, ignore_index=True)
             df_pr_full['Mercado'] = df_pr_full['Mercado'].astype(str).str.strip().str.upper().replace(de_para_mercados)
             df_pr_full['Marca'] = df_pr_full['Marca'].astype(str).str.strip().str.upper().replace(de_para_marcas)
             
-            df_pr_resumo_final = df_pr_full.groupby(['Marca', 'Mercado', 'Produto', 'Série'])[meses_comparacao].sum().reset_index()
+            # Garante o N/A também no geral
+            chaves = ['Marca', 'Mercado', 'Produto', 'Série']
+            df_pr_full[chaves] = df_pr_full[chaves].fillna('N/A')
+            
+            df_pr_resumo_final = df_pr_full.groupby(chaves)[meses_comparacao].sum().reset_index()
             df_pr_resumo_final['Total PR'] = df_pr_resumo_final[meses_comparacao].sum(axis=1)
             
-            # Consolida o Bruto Final
             if lista_pr_bruto:
                 df_pr_bruto_final = pd.concat(lista_pr_bruto, ignore_index=True)
                 st.session_state['df_pr_bruto'] = df_pr_bruto_final 
             
             st.session_state['df_pr'] = df_pr_resumo_final
             
-            st.success(f"{len(lista_pr_bruto)} arquivos consolidados! Colunas formatadas e mesclas desfeitas com sucesso.")
+            st.success(f"{len(lista_pr_bruto)} arquivos consolidados! Bloqueio contra falsos-vazios e perda de soma ativado.")
             st.dataframe(st.session_state['df_pr'])
 
 with aba3:
@@ -263,7 +260,7 @@ with aba3:
         st.download_button(
             label="📥 Baixar Análise Completa em Excel",
             data=buffer.getvalue(),
-            file_name="Analise_DR_vs_PR_v2-1.xlsx",
+            file_name="Analise_DR_vs_PR_v2-2.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     else:
