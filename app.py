@@ -6,9 +6,9 @@ import urllib.parse
 # Configuração da página
 st.set_page_config(page_title="Validador DR vs PR", layout="wide")
 
-st.title("Validador de Demanda e Produção v4.0 🚀 (Abordagem Literal)")
+st.title("Validador de Demanda e Produção v4.1 🚀 (Cópia Literal)")
 
-# --- REGRAS DE NEGÓCIO (Usadas apenas na Comparação) ---
+# --- REGRAS DE NEGÓCIO ---
 produtos_alvo = ['TA', 'PA', 'PU', 'CO']
 
 de_para_mercados = {
@@ -68,8 +68,6 @@ with aba1:
                     df_dr[mes] = pd.to_numeric(df_dr[mes], errors='coerce').fillna(0)
                 
                 chaves_agrupamento = ['Marca', 'Mercado', 'Produto', 'Série']
-                
-                # dropna=False impede que o Python delete a linha se a Série estiver em branco!
                 st.session_state['df_dr'] = df_dr.groupby(chaves_agrupamento, dropna=False)[meses].sum().reset_index()
                 
                 st.success(f"Aba '{aba_selecionada}' processada com sucesso!")
@@ -80,7 +78,7 @@ with aba1:
 
 with aba2:
     st.subheader("Etapa 2: Consolidação Bruta e Direta do PR")
-    st.write("Faça o upload dos 6 arquivos juntos.")
+    st.write("Faça o upload dos arquivos juntos.")
     
     arquivos_pr = st.file_uploader("Upload dos arquivos Excel (PR)", type=["xlsx", "xls", "xlsm"], accept_multiple_files=True, key="upload_pr")
     
@@ -89,26 +87,47 @@ with aba2:
         lista_pr_resumo = []
         erros_pr = []
         
+        # A VARIÁVEL MÁGICA: Vai guardar o cabeçalho do 1º arquivo
+        cabecalho_oficial = None 
+        
         for arq in arquivos_pr:
             try:
                 xls_pr = pd.ExcelFile(arq)
                 abas_pr = xls_pr.sheet_names
                 aba_alvo = next((aba for aba in abas_pr if "production request" in aba.lower()), abas_pr[0])
                 
-                # 1. Copia Literal: Lê de B até W, considerando a linha 4 do Excel (header=3 no Python) como cabeçalho
+                # Lê de B até W, considerando a linha 4 do Excel (header=3 no Python) como cabeçalho
                 df_raw = pd.read_excel(xls_pr, sheet_name=aba_alvo, header=3, usecols="B:W")
                 
-                # 2. Definição do Range (Linhas preenchidas baseadas nas colunas B a G)
-                # O iloc[:, 0:6] pega as primeiras 6 colunas do nosso recorte (B, C, D, E, F, G)
-                # Apagamos apenas as linhas onde TODAS essas 6 colunas estão vazias (final da tabela)
+                # Definição do Range: Apaga as linhas do final onde as colunas B até G estão vazias
                 df_raw.dropna(subset=df_raw.columns[0:6], how='all', inplace=True)
                 
-                # 3. Adiciona a origem e salva o Bruto EXATAMENTE como veio
+                # --- A LÓGICA DO CABEÇALHO MESTRE ---
+                if cabecalho_oficial is None:
+                    # Se for o primeiro arquivo, salva os nomes das colunas como oficiais
+                    # Tratamento rápido apenas para evitar colunas com o exato mesmo nome
+                    cols_limpas = []
+                    vistos = set()
+                    for c in df_raw.columns.astype(str):
+                        novo_c = c.strip()
+                        contador = 1
+                        while novo_c in vistos:
+                            novo_c = f"{c.strip()}_{contador}"
+                            contador += 1
+                        vistos.add(novo_c)
+                        cols_limpas.append(novo_c)
+                    
+                    cabecalho_oficial = cols_limpas
+                
+                # FORÇA O ARQUIVO A USAR O CABEÇALHO DO PRIMEIRO (Cola como valor embaixo)
+                df_raw.columns = cabecalho_oficial
+                
+                # Adiciona a origem
                 df_raw['Arquivo_Origem'] = arq.name
                 lista_pr_bruto.append(df_raw.copy())
                 
-                # 4. Extração para a Comparação (Usando Posição Absoluta para ignorar os nomes dos cabeçalhos)
-                # B(0), C(1), D(2), E(3), F(4), G(5), H(6), I(7), J(8)... Q(15), R(16), S(17), T(18), U(19), V(20)
+                # --- EXTRAÇÃO PARA COMPARAÇÃO PELA POSIÇÃO FÍSICA ---
+                # Como forçamos todos os cabeçalhos a serem iguais, a posição não muda.
                 df_resumo_temp = pd.DataFrame()
                 df_resumo_temp['Planta']  = df_raw.iloc[:, 1]  # Coluna C
                 df_resumo_temp['Marca']   = df_raw.iloc[:, 4]  # Coluna F
@@ -116,13 +135,13 @@ with aba2:
                 df_resumo_temp['Produto'] = df_raw.iloc[:, 6]  # Coluna H
                 df_resumo_temp['Série']   = df_raw.iloc[:, 7]  # Coluna I
                 
-                # Extraindo os meses do 2º semestre diretamente pela posição
-                df_resumo_temp['Jul'] = df_raw.iloc[:, 15] # Coluna Q
-                df_resumo_temp['Ago'] = df_raw.iloc[:, 16] # Coluna R
-                df_resumo_temp['Set'] = df_raw.iloc[:, 17] # Coluna S
-                df_resumo_temp['Out'] = df_raw.iloc[:, 18] # Coluna T
-                df_resumo_temp['Nov'] = df_raw.iloc[:, 19] # Coluna U
-                df_resumo_temp['Dez'] = df_raw.iloc[:, 20] # Coluna V
+                # Meses (Q=15, R=16, S=17, T=18, U=19, V=20)
+                df_resumo_temp['Jul'] = df_raw.iloc[:, 15]
+                df_resumo_temp['Ago'] = df_raw.iloc[:, 16]
+                df_resumo_temp['Set'] = df_raw.iloc[:, 17]
+                df_resumo_temp['Out'] = df_raw.iloc[:, 18]
+                df_resumo_temp['Nov'] = df_raw.iloc[:, 19]
+                df_resumo_temp['Dez'] = df_raw.iloc[:, 20]
                 
                 lista_pr_resumo.append(df_resumo_temp)
                 
@@ -134,14 +153,13 @@ with aba2:
                 st.error(erro)
                 
         if lista_pr_resumo:
-            # --- SALVA O BRUTO COMPLETO ---
+            # --- SALVA O BRUTO COMPLETO ALINHADO ---
             df_pr_bruto_final = pd.concat(lista_pr_bruto, ignore_index=True)
             st.session_state['df_pr_bruto'] = df_pr_bruto_final 
             
-            # --- PROCESSA O RESUMO PARA COMPARAÇÃO ---
+            # --- PROCESSA O RESUMO ---
             df_pr_full = pd.concat(lista_pr_resumo, ignore_index=True)
             
-            # Aplica os filtros exigidos AQUI NA COMPARAÇÃO
             df_pr_full['Produto'] = df_pr_full['Produto'].astype(str).str.strip().str.upper()
             df_pr_full['Planta'] = df_pr_full['Planta'].astype(str).str.strip().str.upper()
             
@@ -150,21 +168,19 @@ with aba2:
             
             df_pr_filtrado = df_pr_full[mask_produtos & mask_planta].copy()
             
-            # De-Para e limpeza
             df_pr_filtrado['Mercado'] = df_pr_filtrado['Mercado'].astype(str).str.strip().str.upper().replace(de_para_mercados)
             df_pr_filtrado['Marca'] = df_pr_filtrado['Marca'].astype(str).str.strip().str.upper().replace(de_para_marcas)
             
             for mes in meses_comparacao:
                 df_pr_filtrado[mes] = pd.to_numeric(df_pr_filtrado[mes], errors='coerce').fillna(0)
             
-            # Agrupa usando dropna=False (Mantém a linha mesmo se a Série estiver vazia no Excel!)
             chaves = ['Marca', 'Mercado', 'Produto', 'Série']
             df_pr_resumo_final = df_pr_filtrado.groupby(chaves, dropna=False)[meses_comparacao].sum().reset_index()
             df_pr_resumo_final['Total PR'] = df_pr_resumo_final[meses_comparacao].sum(axis=1)
             
             st.session_state['df_pr'] = df_pr_resumo_final
             
-            st.success(f"{len(lista_pr_bruto)} arquivos consolidados e filtrados com sucesso!")
+            st.success(f"{len(lista_pr_bruto)} arquivos consolidados e perfeitamente empilhados!")
             st.dataframe(st.session_state['df_pr'])
 
 with aba3:
@@ -178,7 +194,6 @@ with aba3:
         dr_subset = df_dr_final[['Marca', 'Mercado', 'Produto', 'Série'] + meses_comparacao].copy()
         dr_subset['Total DR'] = dr_subset[meses_comparacao].sum(axis=1)
         
-        # Faz o cruzamento das duas tabelas (Agora aceita células vazias originais)
         df_merge = pd.merge(dr_subset, df_pr_final, on=['Marca', 'Mercado', 'Produto', 'Série'], how='outer', suffixes=('_DR', '_PR')).fillna(0)
         
         colunas_diferenca = []
@@ -189,7 +204,6 @@ with aba3:
         df_merge['Dif_Total'] = df_merge['Total PR'] - df_merge['Total DR']
         colunas_diferenca.append('Dif_Total')
         
-        # Agrupamentos Finais
         df_dif_resumo_excel = df_merge.groupby(['Marca', 'Mercado', 'Produto'], dropna=False)[colunas_diferenca].sum().reset_index()
         df_dif_detalhada_excel = df_merge[['Marca', 'Mercado', 'Produto', 'Série'] + colunas_diferenca]
         
@@ -231,7 +245,7 @@ with aba3:
         st.download_button(
             label="📥 Baixar Análise Completa em Excel",
             data=buffer.getvalue(),
-            file_name="Analise_DR_vs_PR_v4-0.xlsx",
+            file_name="Analise_DR_vs_PR_v4-1.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     else:
