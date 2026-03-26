@@ -6,7 +6,7 @@ import urllib.parse
 # Configuração da página
 st.set_page_config(page_title="Validador DR vs PR", layout="wide")
 
-st.title("Validador de Demanda e Produção v2.0 🚀")
+st.title("Validador de Demanda e Produção v2.1 🚀")
 
 # --- REGRAS DE NEGÓCIO ---
 produtos_alvo = ['TA', 'PA', 'PU', 'CO']
@@ -86,11 +86,11 @@ with aba2:
         lista_pr_bruto = []
         erros_pr = []
         
-        # --- O ESQUELETO BLINDADO DE COLUNAS B a W (22 Colunas exatas) ---
+        # --- CABEÇALHO CLARO E EXPLICATIVO (O QUE O USUÁRIO VÊ NA TELA E NO EXCEL) ---
         colunas_absolutas = [
-            'B_InfoGeral', 'C_Planta', 'D_InfoGeral', 'E_InfoGeral', 
+            'B_Ciclo', 'C_Planta', 'D_Código', 'E_FC', 
             'F_Marca', 'G_Mercado', 'H_Produto', 'I_Série',
-            'J_Jan', 'K_Fev', 'L_Mar', 'M_Abr', 'N_Mai', 'O_Jun', 'P_InfoGeral',
+            'J_Jan', 'K_Fev', 'L_Mar', 'M_Abr', 'N_Mai', 'O_Jun', 'P_Sem1',
             'Q_Julho', 'R_Agosto', 'S_Setembro', 'T_Outubro', 'U_Novembro', 'V_Dezembro', 'W_Total_Ano'
         ]
         
@@ -100,29 +100,34 @@ with aba2:
                 abas_pr = xls_pr.sheet_names
                 aba_alvo = next((aba for aba in abas_pr if "production request" in aba.lower()), abas_pr[0])
                 
-                # NOVO PARADIGMA: Leitura física de coordenadas (B até W) sem tentar achar cabeçalho
+                # Leitura Cirúrgica (Carrega como um bloco bruto de B até W)
                 df_raw = pd.read_excel(xls_pr, sheet_name=aba_alvo, header=None, usecols="B:W")
                 
-                # Garante que a matriz tem exatas 22 colunas (caso o excel esteja incompleto nas beiradas)
+                # Garante que a matriz tem exatas 22 colunas, preenchendo o que faltar
                 while len(df_raw.columns) < 22:
                     df_raw[len(df_raw.columns)] = None
 
-                # O RADAR (Buscando onde os dados começam analisando a Coluna H - Índice 6)
-                linha_inicio_dados = 4 # Valor padrão de segurança
+                # NOMEIA AS COLUNAS PRIMEIRO (Evita que o Python erre a mira)
+                df_raw.columns = colunas_absolutas
+                df_raw['Arquivo_Origem'] = arq.name
+
+                # O RADAR (Buscando onde os dados começam com base na palavra PRODUTO na coluna H)
+                linha_inicio_dados = 4
                 for i in range(min(20, len(df_raw))):
-                    val_h = str(df_raw.iloc[i, 6]).strip().upper()
+                    val_h = str(df_raw['H_Produto'].iloc[i]).strip().upper()
                     if 'PRODUTO' in val_h or 'PROD' in val_h:
-                        linha_inicio_dados = i + 1 # O dado real começa na linha exata de baixo!
+                        linha_inicio_dados = i + 1
                         break
                 
-                # Recorta o quadrado exato dos dados (sem lixo em cima)
+                # Recorta apenas os dados
                 df_dados = df_raw.iloc[linha_inicio_dados:].copy()
                 
-                # Carimba o cabeçalho blindado em cima
-                df_dados.columns = colunas_absolutas
-                df_dados['Arquivo_Origem'] = arq.name
+                # --- O TRUQUE PARA SALVAR AS CÉLULAS MESCLADAS ---
+                # Arrasta o nome da Planta, Marca, Mercado e Produto para as linhas em branco abaixo delas
+                colunas_para_preencher = ['C_Planta', 'F_Marca', 'G_Mercado', 'H_Produto']
+                df_dados[colunas_para_preencher] = df_dados[colunas_para_preencher].ffill()
                 
-                # Remove linhas completamente vazias
+                # Remove apenas as linhas que estão 100% em branco nos códigos
                 df_dados.dropna(subset=['H_Produto', 'I_Série'], how='all', inplace=True)
                 
                 # --- FILTROS DE NEGÓCIO ---
@@ -139,7 +144,7 @@ with aba2:
                 
                 # --- BORRACHA E MATEMÁTICA ---
                 # Limpa meses antigos
-                col_jan_jun = ['J_Jan', 'K_Fev', 'L_Mar', 'M_Abr', 'N_Mai', 'O_Jun', 'P_InfoGeral']
+                col_jan_jun = ['J_Jan', 'K_Fev', 'L_Mar', 'M_Abr', 'N_Mai', 'O_Jun', 'P_Sem1']
                 df_bruto.loc[:, col_jan_jun] = None
                 
                 # Força números puros no semestre 2
@@ -147,10 +152,9 @@ with aba2:
                 for mes in meses_semestre2:
                     df_bruto[mes] = pd.to_numeric(df_bruto[mes], errors='coerce').fillna(0)
                 
-                # Recalcula o Total da coluna W do zero (impossível errar agora)
+                # Recalcula o Total da coluna W do zero
                 df_bruto['W_Total_Ano'] = df_bruto[meses_semestre2].sum(axis=1)
                 
-                # Guarda o arquivo tratado
                 lista_pr_bruto.append(df_bruto)
                 
                 # --- PREPARA O RESUMO PARA A COMPARAÇÃO (Etapa 3) ---
@@ -187,14 +191,14 @@ with aba2:
             df_pr_resumo_final = df_pr_full.groupby(['Marca', 'Mercado', 'Produto', 'Série'])[meses_comparacao].sum().reset_index()
             df_pr_resumo_final['Total PR'] = df_pr_resumo_final[meses_comparacao].sum(axis=1)
             
-            # Consolida o Bruto Final (Tudo Perfeito e Empilhado)
+            # Consolida o Bruto Final
             if lista_pr_bruto:
                 df_pr_bruto_final = pd.concat(lista_pr_bruto, ignore_index=True)
                 st.session_state['df_pr_bruto'] = df_pr_bruto_final 
             
             st.session_state['df_pr'] = df_pr_resumo_final
             
-            st.success(f"{len(lista_pr_bruto)} arquivos consolidados com a Arquitetura de Coordenadas! Filtros e cálculos exatos aplicados.")
+            st.success(f"{len(lista_pr_bruto)} arquivos consolidados! Colunas formatadas e mesclas desfeitas com sucesso.")
             st.dataframe(st.session_state['df_pr'])
 
 with aba3:
@@ -259,7 +263,7 @@ with aba3:
         st.download_button(
             label="📥 Baixar Análise Completa em Excel",
             data=buffer.getvalue(),
-            file_name="Analise_DR_vs_PR_v2-0.xlsx",
+            file_name="Analise_DR_vs_PR_v2-1.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     else:
