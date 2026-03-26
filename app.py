@@ -6,7 +6,7 @@ import urllib.parse
 # Configuração da página
 st.set_page_config(page_title="Validador DR vs PR", layout="wide")
 
-st.title("Validador de Demanda e Produção v1.3 🚀")
+st.title("Validador de Demanda e Produção v1.4 🚀")
 
 # --- REGRAS DE NEGÓCIO ---
 produtos_alvo = ['TA', 'PA', 'PU', 'CO']
@@ -86,7 +86,7 @@ with aba2:
         lista_pr_resumo = []
         lista_pr_bruto = []
         erros_pr = []
-        cabecalho_padrao = None # Variável para travar o cabeçalho no primeiro arquivo
+        cabecalho_padrao = None 
         
         for arq in arquivos_pr:
             try:
@@ -108,16 +108,21 @@ with aba2:
                 mask_final = mask_produtos & mask_planta
 
                 # --- AJUSTE DA ESTEIRA BRUTA ---
-                df_bruto = df_tmp_raw.iloc[1:, 1:23].copy()
+                df_bruto = df_tmp_raw.iloc[1:, 1:23].copy() # Copia de B (1) a W (22)
                 df_bruto = df_bruto[mask_final]
                 
-                # Se for o primeiro arquivo, cria e salva o cabeçalho padrão limpo
+                # BORRACHA AUTOMÁTICA: Limpa as colunas de Jan a Jun (J até P)
+                # No recorte de B até W (22 colunas), J a P caem exatamente nos índices 8 ao 14
+                if not df_bruto.empty:
+                    df_bruto.iloc[:, 8:15] = None
+                
+                # Trava o cabeçalho no primeiro arquivo para evitar a "escadinha"
                 if cabecalho_padrao is None:
                     raw_cols = df_tmp_raw.iloc[0, 1:23].astype(str).tolist()
                     unique_cols = []
                     seen = set()
                     for col in raw_cols:
-                        new_col = col.strip() # Limpa espaços nas pontas
+                        new_col = col.strip()
                         counter = 1
                         while new_col in seen:
                             new_col = f"{col.strip()}_{counter}"
@@ -126,7 +131,6 @@ with aba2:
                         unique_cols.append(new_col)
                     cabecalho_padrao = unique_cols
                 
-                # Força TODOS os arquivos a usarem o exato mesmo cabeçalho do primeiro
                 df_bruto.columns = cabecalho_padrao
                 df_bruto['Arquivo_Origem'] = arq.name
                 df_bruto.dropna(how='all', inplace=True)
@@ -185,7 +189,6 @@ with aba2:
             df_pr_resumo_final['Total PR'] = df_pr_resumo_final[meses_comparacao].sum(axis=1)
             
             if lista_pr_bruto:
-                # Agora a colagem vertical (escadinha) não acontece mais!
                 df_pr_bruto_final = pd.concat(lista_pr_bruto, ignore_index=True)
                 df_pr_bruto_final.dropna(how='all', inplace=True)
                 st.session_state['df_pr_bruto'] = df_pr_bruto_final 
@@ -263,7 +266,7 @@ with aba3:
         st.download_button(
             label="📥 Baixar Análise Completa em Excel",
             data=buffer.getvalue(),
-            file_name="Analise_DR_vs_PR_v1-3.xlsx",
+            file_name="Analise_DR_vs_PR_v1-4.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     else:
