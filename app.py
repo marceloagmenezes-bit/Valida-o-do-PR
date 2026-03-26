@@ -6,7 +6,7 @@ import urllib.parse
 # Configuração da página
 st.set_page_config(page_title="Validador DR vs PR", layout="wide")
 
-st.title("Validador de Demanda e Produção v1.6 🚀")
+st.title("Validador de Demanda e Produção v2.0 🚀")
 
 # --- REGRAS DE NEGÓCIO ---
 produtos_alvo = ['TA', 'PA', 'PU', 'CO']
@@ -21,7 +21,6 @@ de_para_marcas = {
     'FE': 'FT'
 }
 
-# --- CONTATOS ---
 email_padrao_teams = "ana.teste@outlook.com"
 
 # --- FUNÇÃO GERADORA DO LINK COM MENSAGEM ---
@@ -70,7 +69,7 @@ with aba1:
                 
                 st.session_state['df_dr'] = df_dr.groupby(['Marca', 'Mercado', 'Produto', 'Série'])[meses].sum().reset_index()
                 
-                st.success(f"Aba '{aba_selecionada}' processada com sucesso! Filtros aplicados: Plantas 'BRA' e Produtos Alvo.")
+                st.success(f"Aba '{aba_selecionada}' processada com sucesso!")
                 st.dataframe(st.session_state['df_dr'])
                 
         except Exception as e:
@@ -86,8 +85,8 @@ with aba2:
         lista_pr_bruto = []
         erros_pr = []
         
-        # --- CABEÇALHO DEFINITIVO À PROVA DE BALAS ---
-        nomes_colunas_estaticas = [
+        # Cabeçalho Fixo (Garante que todo arquivo colado tenha o exato mesmo nome visível)
+        cabecalho_fixo = [
             'B_InfoGeral', 'C_Planta', 'D_InfoGeral', 'E_InfoGeral', 
             'F_Marca', 'G_Mercado', 'H_Produto', 'I_Série',
             'J_Jan', 'K_Fev', 'L_Mar', 'M_Abr', 'N_Mai', 'O_Jun', 'P_Sem1',
@@ -100,22 +99,33 @@ with aba2:
                 abas_pr = xls_pr.sheet_names
                 aba_alvo = next((aba for aba in abas_pr if "production request" in aba.lower()), abas_pr[0])
                 
-                # Lê EXATAMENTE de B até W, pulando as 4 primeiras linhas de cabeçalho! Pega só o valor bruto.
-                df_dados = pd.read_excel(xls_pr, sheet_name=aba_alvo, skiprows=4, usecols="B:W", header=None)
+                # --- A GRANDE MUDANÇA: Lendo como Banco de Dados ---
+                # Lê sem cabeçalho e sem pular linhas. Pega o arquivo cru.
+                df_raw = pd.read_excel(xls_pr, sheet_name=aba_alvo, header=None)
                 
-                if df_dados.empty:
+                # Procura os produtos na coluna H (índice 7) e planta na C (índice 2)
+                mask_produtos = df_raw[7].astype(str).str.strip().str.upper().isin(produtos_alvo)
+                mask_planta = df_raw[2].astype(str).str.strip().str.upper() != 'GENERAL RODRIGUEZ'
+                
+                # Isola APENAS as linhas que passaram no filtro (ignora lixo, subtotais e cabeçalhos)
+                df_dados_limpos = df_raw[mask_produtos & mask_planta].copy()
+                
+                if df_dados_limpos.empty:
                     continue
-
-                # Se algum arquivo vier com menos de 22 colunas, o pandas preenche com nulo para não quebrar a ordem
-                if len(df_dados.columns) < 22:
-                    for c in range(len(df_dados.columns), 22):
-                        df_dados[c] = None
                 
-                # Força o nosso cabeçalho claro e perfeito
-                df_dados.columns = nomes_colunas_estaticas
-                df_dados['Arquivo_Origem'] = arq.name
+                # Recorta cirurgicamente as colunas de B (índice 1) até W (índice 22)
+                # Adiciona colunas vazias caso o arquivo venha corrompido faltando pedaço
+                for c in range(1, 23):
+                    if c not in df_dados_limpos.columns:
+                        df_dados_limpos[c] = 0
+                        
+                df_bruto = df_dados_limpos.loc[:, 1:22].copy()
                 
-                lista_pr_bruto.append(df_dados)
+                # Aplica o nosso cabeçalho padronizado e a origem
+                df_bruto.columns = cabecalho_fixo
+                df_bruto['Arquivo_Origem'] = arq.name
+                
+                lista_pr_bruto.append(df_bruto)
                 
             except Exception as e:
                 erros_pr.append(f"Erro no arquivo {arq.name}: {e}")
@@ -125,36 +135,26 @@ with aba2:
                 st.error(erro)
                 
         if lista_pr_bruto:
-            # 1. Empilha todos os dados como blocos de Lego
+            # 1. Empilha todos os dados já limpos
             df_pr_bruto_full = pd.concat(lista_pr_bruto, ignore_index=True)
             
-            # Remove linhas que vieram totalmente em branco
-            df_pr_bruto_full.dropna(how='all', subset=['H_Produto', 'I_Série'], inplace=True)
-            
-            # 2. Aplica os Filtros (Produto e Planta)
-            mask_produtos = df_pr_bruto_full['H_Produto'].astype(str).str.strip().str.upper().isin(produtos_alvo)
-            mask_planta = df_pr_bruto_full['C_Planta'].astype(str).str.strip().str.upper() != 'GENERAL RODRIGUEZ'
-            df_pr_bruto_full = df_pr_bruto_full[mask_produtos & mask_planta].copy()
-            
-            # 3. Borracha: Limpa os meses antigos (J até P)
+            # 2. Borracha: Apaga e zera tudo de Janeiro a Junho para garantir a limpeza
             colunas_limpar = ['J_Jan', 'K_Fev', 'L_Mar', 'M_Abr', 'N_Mai', 'O_Jun', 'P_Sem1']
-            df_pr_bruto_full[colunas_limpar] = None
+            df_pr_bruto_full[colunas_limpar] = 0
             
-            # 4. Transforma os meses de Q a V em números reais (0 se estiver vazio)
+            # 3. Força os meses do 2º Semestre a serem números (transformando vazios ou textos em 0)
             meses_q_v = ['Q_Julho', 'R_Agosto', 'S_Setembro', 'T_Outubro', 'U_Novembro', 'V_Dezembro']
             for mes in meses_q_v:
                 df_pr_bruto_full[mes] = pd.to_numeric(df_pr_bruto_full[mes], errors='coerce').fillna(0)
                 
-            # 5. Recalcula o Total da coluna W para garantir que está 100% perfeito
+            # 4. Recalcula o Total da coluna W do zero (Soma exata de Q até V)
             df_pr_bruto_full['W_Total_Ano'] = df_pr_bruto_full[meses_q_v].sum(axis=1)
             
-            # Salva a Aba Bruta limpinha e clara
             st.session_state['df_pr_bruto'] = df_pr_bruto_full
             
-            # --- CONSTRUINDO O RESUMO PARA A COMPARAÇÃO ---
+            # --- CONSTRUINDO O RESUMO DA ETAPA 2 ---
             df_resumo = df_pr_bruto_full.copy()
             
-            # Renomeia as colunas pro padrão que o robô já conhece na Etapa 3
             de_para_nomes = {
                 'F_Marca': 'Marca',
                 'G_Mercado': 'Mercado',
@@ -165,22 +165,19 @@ with aba2:
                 'S_Setembro': 'Set',
                 'T_Outubro': 'Out',
                 'U_Novembro': 'Nov',
-                'V_Dezembro': 'Dez',
-                'W_Total_Ano': 'Total PR'
+                'V_Dezembro': 'Dez'
             }
             df_resumo.rename(columns=de_para_nomes, inplace=True)
             
-            # Aplica o De-Para de Nomes
             df_resumo['Mercado'] = df_resumo['Mercado'].astype(str).str.strip().str.upper().replace(de_para_mercados)
             df_resumo['Marca'] = df_resumo['Marca'].astype(str).str.strip().str.upper().replace(de_para_marcas)
             
-            # Agrupa
             df_pr_resumo_final = df_resumo.groupby(['Marca', 'Mercado', 'Produto', 'Série'])[meses_comparacao].sum().reset_index()
             df_pr_resumo_final['Total PR'] = df_pr_resumo_final[meses_comparacao].sum(axis=1)
             
             st.session_state['df_pr'] = df_pr_resumo_final
             
-            st.success(f"{len(lista_pr_bruto)} arquivos consolidados com sucesso! Apenas TA, PA, PU e CO. (General Rodriguez excluído).")
+            st.success(f"{len(lista_pr_bruto)} arquivos consolidados cirurgicamente!")
             st.dataframe(st.session_state['df_pr'])
 
 with aba3:
@@ -211,9 +208,9 @@ with aba3:
         df_dif_tela = df_dif_tela[df_dif_tela['Dif_Total'] != 0].copy()
         
         if df_dif_tela.empty:
-            st.success("🎉 TUDO OK! Os números batem perfeitamente. Nenhuma diferença encontrada no Total de Julho a Dezembro para os produtos selecionados.")
+            st.success("🎉 TUDO OK! Os números batem perfeitamente. Nenhuma diferença encontrada no Total de Julho a Dezembro.")
         else:
-            st.warning("Atenção: Diferenças encontradas entre a demanda (DR) e a produção (PR). Baixe o Excel para o detalhamento mensal e por série.")
+            st.warning("Atenção: Diferenças encontradas. Baixe o Excel para o detalhamento.")
             
             df_dif_tela['Email'] = email_padrao_teams 
             df_dif_tela['Follow-up'] = df_dif_tela.apply(
@@ -221,17 +218,12 @@ with aba3:
                 axis=1
             )
             
-            st.markdown("#### Resumo de Diferenças (Total)")
-            
             st.dataframe(
                 df_dif_tela, 
                 hide_index=True,
                 column_config={
                     "Email": None,
-                    "Follow-up": st.column_config.LinkColumn(
-                        "Ação Sugerida",
-                        display_text="💬 Enviar Alerta"
-                    )
+                    "Follow-up": st.column_config.LinkColumn("Ação Sugerida", display_text="💬 Enviar Alerta")
                 }
             )
             
@@ -243,7 +235,6 @@ with aba3:
                 df_pr_bruto_export.to_excel(writer, index=False, sheet_name='PR_Bruto_Completo')
                 
             df_pr_final.to_excel(writer, index=False, sheet_name='PR_Resumo_Consolidado')
-            
             df_dif_resumo_excel.to_excel(writer, index=False, sheet_name='Dif_Resumo')
             df_dif_detalhada_excel.to_excel(writer, index=False, sheet_name='Dif_Detalhada')
             
@@ -251,7 +242,7 @@ with aba3:
         st.download_button(
             label="📥 Baixar Análise Completa em Excel",
             data=buffer.getvalue(),
-            file_name="Analise_DR_vs_PR_v1-6.xlsx",
+            file_name="Analise_DR_vs_PR_v2-0.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     else:
