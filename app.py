@@ -2,14 +2,13 @@ import streamlit as st
 import pandas as pd
 import io
 import urllib.parse
-import datetime
 
 # Configuração da página
 st.set_page_config(page_title="Validador DR vs PR", layout="wide")
 
-st.title("Validador de Demanda e Produção v3.0 🚀 (RECONSTRUÍDO)")
+st.title("Validador de Demanda e Produção v4.0 🚀 (Abordagem Literal)")
 
-# --- REGRAS DE NEGÓCIO ---
+# --- REGRAS DE NEGÓCIO (Usadas apenas na Comparação) ---
 produtos_alvo = ['TA', 'PA', 'PU', 'CO']
 
 de_para_mercados = {
@@ -69,9 +68,9 @@ with aba1:
                     df_dr[mes] = pd.to_numeric(df_dr[mes], errors='coerce').fillna(0)
                 
                 chaves_agrupamento = ['Marca', 'Mercado', 'Produto', 'Série']
-                df_dr[chaves_agrupamento] = df_dr[chaves_agrupamento].fillna('N/A')
                 
-                st.session_state['df_dr'] = df_dr.groupby(chaves_agrupamento)[meses].sum().reset_index()
+                # dropna=False impede que o Python delete a linha se a Série estiver em branco!
+                st.session_state['df_dr'] = df_dr.groupby(chaves_agrupamento, dropna=False)[meses].sum().reset_index()
                 
                 st.success(f"Aba '{aba_selecionada}' processada com sucesso!")
                 st.dataframe(st.session_state['df_dr'])
@@ -80,7 +79,9 @@ with aba1:
             st.error(f"Ocorreu um erro na Etapa 1: {e}")
 
 with aba2:
-    st.subheader("Etapa 2: Nova Consolidação Inteligente dos Arquivos PR")
+    st.subheader("Etapa 2: Consolidação Bruta e Direta do PR")
+    st.write("Faça o upload dos 6 arquivos juntos.")
+    
     arquivos_pr = st.file_uploader("Upload dos arquivos Excel (PR)", type=["xlsx", "xls", "xlsm"], accept_multiple_files=True, key="upload_pr")
     
     if arquivos_pr:
@@ -91,104 +92,38 @@ with aba2:
         for arq in arquivos_pr:
             try:
                 xls_pr = pd.ExcelFile(arq)
-                aba_alvo = next((aba for aba in xls_pr.sheet_names if "production request" in aba.lower()), xls_pr.sheet_names[0])
+                abas_pr = xls_pr.sheet_names
+                aba_alvo = next((aba for aba in abas_pr if "production request" in aba.lower()), abas_pr[0])
                 
-                # Lê o quadrado B:W bruto, sem pular linhas fixas
-                df_raw = pd.read_excel(xls_pr, sheet_name=aba_alvo, header=None, usecols="B:W")
+                # 1. Copia Literal: Lê de B até W, considerando a linha 4 do Excel (header=3 no Python) como cabeçalho
+                df_raw = pd.read_excel(xls_pr, sheet_name=aba_alvo, header=3, usecols="B:W")
                 
-                # O "Caçador": Procura em qual linha está escrito "Produto" e "Planta" para usar como cabeçalho
-                header_idx = -1
-                for i in range(min(15, len(df_raw))):
-                    linha_texto = " ".join([str(x).upper() for x in df_raw.iloc[i].values])
-                    if 'PRODUTO' in linha_texto and 'PLANTA' in linha_texto:
-                        header_idx = i
-                        break
+                # 2. Definição do Range (Linhas preenchidas baseadas nas colunas B a G)
+                # O iloc[:, 0:6] pega as primeiras 6 colunas do nosso recorte (B, C, D, E, F, G)
+                # Apagamos apenas as linhas onde TODAS essas 6 colunas estão vazias (final da tabela)
+                df_raw.dropna(subset=df_raw.columns[0:6], how='all', inplace=True)
                 
-                if header_idx == -1:
-                    erros_pr.append(f"Cabeçalho não encontrado no arquivo {arq.name}.")
-                    continue
+                # 3. Adiciona a origem e salva o Bruto EXATAMENTE como veio
+                df_raw['Arquivo_Origem'] = arq.name
+                lista_pr_bruto.append(df_raw.copy())
                 
-                # Define o cabeçalho exato que estava no arquivo e corta os dados dali para baixo
-                nomes_originais = df_raw.iloc[header_idx].values
-                nomes_colunas = []
-                # Cria nomes únicos para evitar conflitos no pandas
-                for c in nomes_originais:
-                    nome = str(c).strip()
-                    if nome == 'nan' or nome == 'None' or nome == '': nome = 'Info_Extra'
-                    # Garante que não repita nome
-                    if nome in nomes_colunas: nome = nome + "_2"
-                    nomes_colunas.append(nome)
-                    
-                df_dados = df_raw.iloc[header_idx + 1:].copy()
-                df_dados.columns = nomes_colunas
-                
-                # Limpa linhas 100% vazias
-                if 'Produto' in df_dados.columns:
-                    df_dados = df_dados.dropna(subset=['Produto'], how='all')
-                
-                # Filtra apenas o que importa
-                df_dados['Produto'] = df_dados['Produto'].astype(str).str.strip().str.upper()
-                df_dados['Planta'] = df_dados['Planta'].astype(str).str.strip().str.upper()
-                
-                mask_produtos = df_dados['Produto'].isin(produtos_alvo)
-                mask_planta = df_dados['Planta'] != 'GENERAL RODRIGUEZ'
-                
-                df_bruto = df_dados[mask_produtos & mask_planta].copy()
-                
-                if df_bruto.empty:
-                    continue
-                
-                df_bruto['Arquivo_Origem'] = arq.name
-                
-                # --- IDENTIFICA E LIMPA OS MESES AUTOMATICAMENTE ---
-                cols_para_soma = []
-                col_total = None
-                
-                for col in df_bruto.columns:
-                    col_str = str(col).lower()
-                    
-                    # Identifica se a coluna é o TOTAL
-                    if 'total' in col_str:
-                        col_total = col
-                    
-                    # Identifica se é mês do SEGUNDO semestre (Jul-Dez)
-                    elif '07-01' in col_str or '2026-07' in col_str: cols_para_soma.append((col, 'Jul'))
-                    elif '08-01' in col_str or '2026-08' in col_str: cols_para_soma.append((col, 'Ago'))
-                    elif '09-01' in col_str or '2026-09' in col_str: cols_para_soma.append((col, 'Set'))
-                    elif '10-01' in col_str or '2026-10' in col_str: cols_para_soma.append((col, 'Out'))
-                    elif '11-01' in col_str or '2026-11' in col_str: cols_para_soma.append((col, 'Nov'))
-                    elif '12-01' in col_str or '2026-12' in col_str: cols_para_soma.append((col, 'Dez'))
-                    
-                    # Zera meses antigos (Jan-Jun)
-                    elif any(m in col_str for m in ['2026-01', '2026-02', '2026-03', '2026-04', '2026-05', '2026-06']):
-                        df_bruto[col] = 0
-                
-                # Converte os meses do 2º semestre para números
-                colunas_reais_dos_meses = [c[0] for c in cols_para_soma]
-                for mes_col in colunas_reais_dos_meses:
-                    df_bruto[mes_col] = pd.to_numeric(df_bruto[mes_col], errors='coerce').fillna(0)
-                
-                # Recalcula o total apenas com a soma exata de Jul a Dez
-                if col_total:
-                    df_bruto[col_total] = df_bruto[colunas_reais_dos_meses].sum(axis=1)
-                
-                # Renomeia os cabeçalhos para ficarem bonitos na aba Bruta
-                rename_dict = {c[0]: c[1] for c in cols_para_soma}
-                df_bruto.rename(columns=rename_dict, inplace=True)
-                
-                lista_pr_bruto.append(df_bruto)
-                
-                # --- PREPARA O RESUMO (Etapa 3) ---
+                # 4. Extração para a Comparação (Usando Posição Absoluta para ignorar os nomes dos cabeçalhos)
+                # B(0), C(1), D(2), E(3), F(4), G(5), H(6), I(7), J(8)... Q(15), R(16), S(17), T(18), U(19), V(20)
                 df_resumo_temp = pd.DataFrame()
+                df_resumo_temp['Planta']  = df_raw.iloc[:, 1]  # Coluna C
+                df_resumo_temp['Marca']   = df_raw.iloc[:, 4]  # Coluna F
+                df_resumo_temp['Mercado'] = df_raw.iloc[:, 5]  # Coluna G
+                df_resumo_temp['Produto'] = df_raw.iloc[:, 6]  # Coluna H
+                df_resumo_temp['Série']   = df_raw.iloc[:, 7]  # Coluna I
                 
-                df_resumo_temp['Marca'] = df_bruto['Marca'] if 'Marca' in df_bruto.columns else 'N/A'
-                df_resumo_temp['Mercado'] = df_bruto['Mercado'] if 'Mercado' in df_bruto.columns else 'N/A'
-                df_resumo_temp['Produto'] = df_bruto['Produto']
-                df_resumo_temp['Série'] = df_bruto['Série'] if 'Série' in df_bruto.columns else 'N/A'
+                # Extraindo os meses do 2º semestre diretamente pela posição
+                df_resumo_temp['Jul'] = df_raw.iloc[:, 15] # Coluna Q
+                df_resumo_temp['Ago'] = df_raw.iloc[:, 16] # Coluna R
+                df_resumo_temp['Set'] = df_raw.iloc[:, 17] # Coluna S
+                df_resumo_temp['Out'] = df_raw.iloc[:, 18] # Coluna T
+                df_resumo_temp['Nov'] = df_raw.iloc[:, 19] # Coluna U
+                df_resumo_temp['Dez'] = df_raw.iloc[:, 20] # Coluna V
                 
-                for col_original, mes_nome in cols_para_soma:
-                    df_resumo_temp[mes_nome] = df_bruto[mes_nome]
-                    
                 lista_pr_resumo.append(df_resumo_temp)
                 
             except Exception as e:
@@ -199,29 +134,37 @@ with aba2:
                 st.error(erro)
                 
         if lista_pr_resumo:
-            df_pr_full = pd.concat(lista_pr_resumo, ignore_index=True)
-            df_pr_full['Mercado'] = df_pr_full['Mercado'].astype(str).str.strip().str.upper().replace(de_para_mercados)
-            df_pr_full['Marca'] = df_pr_full['Marca'].astype(str).str.strip().str.upper().replace(de_para_marcas)
+            # --- SALVA O BRUTO COMPLETO ---
+            df_pr_bruto_final = pd.concat(lista_pr_bruto, ignore_index=True)
+            st.session_state['df_pr_bruto'] = df_pr_bruto_final 
             
-            chaves = ['Marca', 'Mercado', 'Produto', 'Série']
-            df_pr_full[chaves] = df_pr_full[chaves].fillna('N/A')
+            # --- PROCESSA O RESUMO PARA COMPARAÇÃO ---
+            df_pr_full = pd.concat(lista_pr_resumo, ignore_index=True)
+            
+            # Aplica os filtros exigidos AQUI NA COMPARAÇÃO
+            df_pr_full['Produto'] = df_pr_full['Produto'].astype(str).str.strip().str.upper()
+            df_pr_full['Planta'] = df_pr_full['Planta'].astype(str).str.strip().str.upper()
+            
+            mask_produtos = df_pr_full['Produto'].isin(produtos_alvo)
+            mask_planta = df_pr_full['Planta'] != 'GENERAL RODRIGUEZ'
+            
+            df_pr_filtrado = df_pr_full[mask_produtos & mask_planta].copy()
+            
+            # De-Para e limpeza
+            df_pr_filtrado['Mercado'] = df_pr_filtrado['Mercado'].astype(str).str.strip().str.upper().replace(de_para_mercados)
+            df_pr_filtrado['Marca'] = df_pr_filtrado['Marca'].astype(str).str.strip().str.upper().replace(de_para_marcas)
             
             for mes in meses_comparacao:
-                if mes not in df_pr_full.columns:
-                    df_pr_full[mes] = 0
-                else:
-                    df_pr_full[mes] = pd.to_numeric(df_pr_full[mes], errors='coerce').fillna(0)
+                df_pr_filtrado[mes] = pd.to_numeric(df_pr_filtrado[mes], errors='coerce').fillna(0)
             
-            df_pr_resumo_final = df_pr_full.groupby(chaves)[meses_comparacao].sum().reset_index()
+            # Agrupa usando dropna=False (Mantém a linha mesmo se a Série estiver vazia no Excel!)
+            chaves = ['Marca', 'Mercado', 'Produto', 'Série']
+            df_pr_resumo_final = df_pr_filtrado.groupby(chaves, dropna=False)[meses_comparacao].sum().reset_index()
             df_pr_resumo_final['Total PR'] = df_pr_resumo_final[meses_comparacao].sum(axis=1)
-            
-            if lista_pr_bruto:
-                df_pr_bruto_final = pd.concat(lista_pr_bruto, ignore_index=True)
-                st.session_state['df_pr_bruto'] = df_pr_bruto_final 
             
             st.session_state['df_pr'] = df_pr_resumo_final
             
-            st.success(f"{len(lista_pr_bruto)} arquivos consolidados com a Nova Engenharia V3.0! Cálculo perfeito estabelecido.")
+            st.success(f"{len(lista_pr_bruto)} arquivos consolidados e filtrados com sucesso!")
             st.dataframe(st.session_state['df_pr'])
 
 with aba3:
@@ -235,6 +178,7 @@ with aba3:
         dr_subset = df_dr_final[['Marca', 'Mercado', 'Produto', 'Série'] + meses_comparacao].copy()
         dr_subset['Total DR'] = dr_subset[meses_comparacao].sum(axis=1)
         
+        # Faz o cruzamento das duas tabelas (Agora aceita células vazias originais)
         df_merge = pd.merge(dr_subset, df_pr_final, on=['Marca', 'Mercado', 'Produto', 'Série'], how='outer', suffixes=('_DR', '_PR')).fillna(0)
         
         colunas_diferenca = []
@@ -245,10 +189,11 @@ with aba3:
         df_merge['Dif_Total'] = df_merge['Total PR'] - df_merge['Total DR']
         colunas_diferenca.append('Dif_Total')
         
-        df_dif_resumo_excel = df_merge.groupby(['Marca', 'Mercado', 'Produto'])[colunas_diferenca].sum().reset_index()
+        # Agrupamentos Finais
+        df_dif_resumo_excel = df_merge.groupby(['Marca', 'Mercado', 'Produto'], dropna=False)[colunas_diferenca].sum().reset_index()
         df_dif_detalhada_excel = df_merge[['Marca', 'Mercado', 'Produto', 'Série'] + colunas_diferenca]
         
-        df_dif_tela = df_merge.groupby(['Marca', 'Mercado', 'Produto'])['Dif_Total'].sum().reset_index()
+        df_dif_tela = df_merge.groupby(['Marca', 'Mercado', 'Produto'], dropna=False)['Dif_Total'].sum().reset_index()
         df_dif_tela = df_dif_tela[df_dif_tela['Dif_Total'] != 0].copy()
         
         if df_dif_tela.empty:
@@ -286,7 +231,7 @@ with aba3:
         st.download_button(
             label="📥 Baixar Análise Completa em Excel",
             data=buffer.getvalue(),
-            file_name="Analise_DR_vs_PR_v3-0.xlsx",
+            file_name="Analise_DR_vs_PR_v4-0.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     else:
